@@ -1,0 +1,32 @@
+{
+  "protocol": "lenso.console-module.v1",
+  "moduleId": "lenso/notification",
+  "hostApi": "^2.1.0",
+  "consoleUi": "^2.0.0",
+  "surfaces": [
+    {
+      "id": "deliveries",
+      "path": "/notifications/deliveries",
+      "label": "Deliveries",
+      "area": "runtime",
+      "requiredCapabilities": [
+        "notification.deliveries.read"
+      ],
+      "icon": "activity",
+      "navigation": {
+        "workspace": {
+          "id": "notifications",
+          "label": "Notifications",
+          "icon": "workflow"
+        },
+        "group": {
+          "id": "transactional",
+          "label": "Transactional",
+          "icon": "activity",
+          "order": 10
+        },
+        "order": 10
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "name": "@lenso/notification-module-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --dir packages/notification-console build",
+    "build:console-artifact": "pnpm build && node scripts/build-console-artifact.mjs",
+    "build:release-receipt": "node scripts/build-release-receipt.mjs",
+    "check": "pnpm check:contracts && pnpm test && pnpm typecheck && pnpm build",
+    "check:contracts": "node scripts/verify-contracts.mjs",
+    "check:ecosystem": "node scripts/verify-ecosystem-contracts.mjs",
+    "generate:console-manifest": "node scripts/generate-console-manifest.mjs",
+    "test": "vitest run packages/notification-console/src",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "devDependencies": {
+    "@lenso/console-module-api": "^1.0.0",
+    "@lenso/console-ui": "^1.0.0",
+    "@stylexjs/unplugin": "0.19.0",
+    "@types/node": "^25.9.2",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "7.0.2",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.7"
+  },
+  "packageManager": "pnpm@11.5.0"
+}

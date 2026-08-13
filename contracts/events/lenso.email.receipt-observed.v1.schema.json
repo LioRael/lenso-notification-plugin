@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lenso.dev/contracts/lenso.email.receipt-observed.v1.schema.json",
+  "title": "lenso.email.receipt-observed.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["deliveryId", "attemptId", "functionRunId", "kind", "source", "observedAt", "remoteId", "digest"],
+  "properties": {
+    "deliveryId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "attemptId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "functionRunId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "kind": { "enum": ["delivered", "bounced", "rejected"] },
+    "source": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "remoteId": { "type": "string", "minLength": 1, "maxLength": 320 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
