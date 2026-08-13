@@ -1,0 +1,107 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Notification Business API", "version": "v1" },
+  "x-lenso-contract-id": "notification-http",
+  "x-lenso-contract-version": "v1",
+  "x-lenso-module-id": "lenso/notification",
+  "paths": {
+    "/deliveries": {
+      "get": {
+        "operationId": "notification/http/GET:/deliveries",
+        "summary": "List notification deliveries",
+        "x-lenso-capability": "notification.deliveries.read",
+        "x-lenso-idempotency": "idempotent",
+        "x-lenso-connected-route": { "method": "GET", "path": "/v1/notification/console/deliveries" },
+        "parameters": [
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 200 } },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string", "minLength": 1 } },
+          { "name": "status", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/DeliveryStatus" } }
+        ],
+        "responses": { "200": { "description": "Delivery page", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeliveryPage" } } } } }
+      }
+    },
+    "/deliveries/{id}": {
+      "get": {
+        "operationId": "notification/http/GET:/deliveries/{id}",
+        "summary": "Get notification delivery",
+        "x-lenso-capability": "notification.deliveries.read",
+        "x-lenso-idempotency": "idempotent",
+        "x-lenso-connected-route": { "method": "GET", "path": "/v1/notification/console/deliveries/{id}" },
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1 } }],
+        "responses": { "200": { "description": "Delivery detail", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeliveryDetail" } } } } }
+      }
+    },
+    "/deliveries/{id}/retry": {
+      "post": {
+        "operationId": "notification/http/POST:/deliveries/{id}/retry",
+        "summary": "Retry a scheduled notification delivery now",
+        "x-lenso-capability": "notification.deliveries.retry",
+        "x-lenso-idempotency": "requires_key",
+        "x-lenso-connected-route": { "method": "POST", "path": "/v1/notification/console/deliveries/{id}/retry" },
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string", "minLength": 1 } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RetryRequest" } } } },
+        "responses": {
+          "200": { "description": "Retry decision", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RetryResult" } } } },
+          "409": { "description": "Stale or ineligible delivery", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DeliveryStatus": { "type": "string", "enum": ["queued", "attempting", "accepted", "retry_scheduled", "delivered", "failed", "delivery_unknown"] },
+      "Delivery": {
+        "type": "object",
+        "required": ["id", "recipient_mask", "template_id", "template_version", "locale", "status", "revision", "attempt_count", "max_attempts", "redacted_preview", "content_digest", "correlation_id", "next_attempt_at", "final_reason", "created_at", "updated_at", "retry_now_eligible"],
+        "properties": {
+          "id": { "type": "string" }, "recipient_mask": { "type": "string" },
+          "template_id": { "type": "string" }, "template_version": { "type": "string" },
+          "locale": { "type": "string" }, "status": { "$ref": "#/components/schemas/DeliveryStatus" },
+          "revision": { "type": "integer", "minimum": 1 }, "attempt_count": { "type": "integer", "minimum": 0 },
+          "max_attempts": { "type": "integer", "minimum": 1 }, "redacted_preview": { "type": "string", "maxLength": 160 },
+          "content_digest": { "$ref": "#/components/schemas/Digest" }, "correlation_id": { "type": "string" },
+          "next_attempt_at": { "type": ["string", "null"], "format": "date-time" }, "final_reason": { "type": ["string", "null"] },
+          "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" },
+          "retry_now_eligible": { "type": "boolean" }
+        }
+      },
+      "DeliveryPage": {
+        "type": "object", "additionalProperties": false, "required": ["records", "next_cursor"],
+        "properties": { "records": { "type": "array", "items": { "$ref": "#/components/schemas/Delivery" } }, "next_cursor": { "type": ["string", "null"] } }
+      },
+      "DeliveryDetail": {
+        "allOf": [
+          { "$ref": "#/components/schemas/Delivery" },
+          { "type": "object", "required": ["attempts", "receipts", "retry_requests", "open_in_story_correlation_id"], "properties": {
+            "attempts": { "type": "array", "items": { "$ref": "#/components/schemas/Attempt" } },
+            "receipts": { "type": "array", "items": { "$ref": "#/components/schemas/Receipt" } },
+            "retry_requests": { "type": "array", "items": { "$ref": "#/components/schemas/RetryRecord" } },
+            "open_in_story_correlation_id": { "type": "string" }
+          } }
+        ]
+      },
+      "Attempt": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "sequence", "function_run_id", "status", "provider", "remote_receipt_id", "failure_code", "failure_classification", "started_at", "completed_at"],
+        "properties": {
+          "id": { "type": "string" }, "sequence": { "type": "integer", "minimum": 1 }, "function_run_id": { "type": "string" },
+          "status": { "type": "string" }, "provider": { "type": ["string", "null"] }, "remote_receipt_id": { "type": ["string", "null"] },
+          "failure_code": { "type": ["string", "null"] }, "failure_classification": { "type": ["string", "null"] },
+          "started_at": { "type": "string", "format": "date-time" }, "completed_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "Receipt": {
+        "type": "object", "additionalProperties": false, "required": ["id", "attempt_id", "kind", "source", "remote_id", "digest", "observed_at"],
+        "properties": { "id": { "type": "string" }, "attempt_id": { "type": "string" }, "kind": { "type": "string" }, "source": { "type": "string" }, "remote_id": { "type": "string" }, "digest": { "$ref": "#/components/schemas/Digest" }, "observed_at": { "type": "string", "format": "date-time" } }
+      },
+      "RetryRecord": {
+        "type": "object", "additionalProperties": false, "required": ["id", "kind", "requested_by", "source_revision", "decision", "reason", "scheduled_at", "created_at"],
+        "properties": { "id": { "type": "string" }, "kind": { "type": "string" }, "requested_by": { "type": ["string", "null"] }, "source_revision": { "type": "integer" }, "decision": { "type": "string" }, "reason": { "type": ["string", "null"] }, "scheduled_at": { "type": ["string", "null"], "format": "date-time" }, "created_at": { "type": "string", "format": "date-time" } }
+      },
+      "RetryRequest": { "type": "object", "additionalProperties": false, "required": ["revision", "idempotency_key"], "properties": { "revision": { "type": "integer", "minimum": 1 }, "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 240 } } },
+      "RetryResult": { "type": "object", "additionalProperties": false, "required": ["delivery_id", "revision", "status", "scheduled_at", "idempotent_replay"], "properties": { "delivery_id": { "type": "string" }, "revision": { "type": "integer" }, "status": { "$ref": "#/components/schemas/DeliveryStatus" }, "scheduled_at": { "type": "string", "format": "date-time" }, "idempotent_replay": { "type": "boolean" } } },
+      "Digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+      "Problem": { "type": "object", "required": ["type", "title", "status"], "properties": { "type": { "type": "string" }, "title": { "type": "string" }, "status": { "type": "integer" }, "detail": { "type": "string" }, "instance": { "type": "string" } } }
+    }
+  }
+}

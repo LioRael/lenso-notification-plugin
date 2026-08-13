@@ -1,0 +1,40 @@
+{
+  "protocol": "lenso.module-release.v1",
+  "module_id": "lenso/notification",
+  "version": "0.1.0",
+  "manifest": "{{generated from notification::module::manifest}}",
+  "manifest_digest": "{{sha256 canonical manifest}}",
+  "delivery": {
+    "kind": "linked",
+    "package": "lenso-module-notification",
+    "crate_version": "0.1.0",
+    "archive_checksum": "{{cargo package sha256}}",
+    "default_features": false,
+    "features": [],
+    "binding": "notification::linked_module",
+    "migrations": [{ "locator": "migrations/0001_create_notification_schema.sql", "digest": "{{sha256}}" }]
+  },
+  "console_ui_artifact": {
+    "artifact": { "locator": "notification-console.tgz", "digest": "{{sha256}}" },
+    "format": "console_ui_esm",
+    "protocol_major": 1,
+    "entry": "index.js",
+    "entries": [{ "name": "deliveries", "path": "index.js" }],
+    "styleAssets": [{ "path": "assets/stylex.css" }],
+    "manifest": "{{packages/notification-console/console-module.json}}",
+    "requested_permissions": [],
+    "provenance": []
+  },
+  "compatibility": {
+    "lenso_requirement": ">=0.3.42",
+    "host_api_requirement": "^2.1.0",
+    "console_ui_requirement": "^2.0.0",
+    "rust_requirement": ">=1.94",
+    "targets": [],
+    "transports": [],
+    "protocol_digests": [
+      "sha256:ebbbec96b0657a1158850b1fddbee702367387dfb7f610c9c1ab15d4200089f5"
+    ]
+  },
+  "provenance": []
+}

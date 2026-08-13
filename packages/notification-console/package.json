@@ -1,0 +1,31 @@
+{
+  "name": "@lenso/notification-console",
+  "version": "0.0.0",
+  "description": "Notification Deliveries Console UI artifact.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "files": ["dist", "console-module.json", "package.json"],
+  "scripts": { "build": "vite build", "test": "vitest run src" },
+  "exports": {
+    ".": "./dist/index.js",
+    "./artifact": "./dist/",
+    "./manifest": "./console-module.json"
+  },
+  "lenso": {
+    "console": {
+      "artifact": "./dist/",
+      "format": "console_ui_esm",
+      "entry": "index.js",
+      "manifest": "./console-module.json",
+      "styleAssets": ["assets/stylex.css"]
+    }
+  },
+  "dependencies": {
+    "@lenso/console-module-api": "^1.0.0",
+    "@lenso/console-ui": "^1.0.0",
+    "@stylexjs/stylex": "0.19.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}
