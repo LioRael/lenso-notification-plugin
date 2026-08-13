@@ -2,8 +2,9 @@ use chrono::{Duration, Utc};
 use lenso::host::outbox::ClaimedOutboxEvent;
 use notification::contracts::{
     DispatchOutcome, EMAIL_DISPATCH_OBSERVED_EVENT, EMAIL_RECEIPT_OBSERVED_EVENT,
-    EmailDispatchObserved, EmailDispatchRequested, EmailReceiptObserved, ReceiptKind,
-    RemoteReceiptSummary, SanitizedFailure,
+    EmailDispatchObserved, EmailDispatchRequested, EmailReceiptObserved,
+    RUNTIME_FUNCTION_TERMINAL_EVENT, ReceiptKind, RemoteReceiptSummary, RuntimeFunctionTerminal,
+    SanitizedFailure,
 };
 use notification::domain::DeliveryStatus;
 use notification::events::NotificationEventApplier;
@@ -19,7 +20,7 @@ use serde_json::{Value, json};
 use sqlx::postgres::PgPoolOptions;
 
 #[tokio::test]
-async fn public_intent_is_atomic_and_business_idempotent_when_postgres_is_configured() {
+async fn transactional_email_lifecycle_is_atomic_idempotent_and_fail_closed() {
     let database_url =
         std::env::var("LENSO_TEST_DATABASE_URL").or_else(|_| std::env::var("DATABASE_URL"));
     let Ok(database_url) = database_url else {
@@ -257,6 +258,157 @@ async fn public_intent_is_atomic_and_business_idempotent_when_postgres_is_config
     let console_json = serde_json::to_string(&detail).expect("serialize Console detail");
     assert!(!console_json.contains("member@example.com"));
     assert!(!console_json.contains("secret-token"));
+
+    let manual_now = delivered_at + Duration::seconds(10);
+    let mut manual_request = request.clone();
+    manual_request.source.entity_id = "org_invite_manual_retry".to_owned();
+    manual_request.template.invitation_id = "org_invite_manual_retry".to_owned();
+    manual_request.template.invitation_url =
+        "https://example.test/invitations/manual-retry-token".to_owned();
+    manual_request.idempotency_key = "organization-invitation:org_invite_manual_retry".to_owned();
+    manual_request.correlation_id = "corr_notification_manual_retry".to_owned();
+    let mut manual_tx = lenso::host::transaction::LinkedTransaction::begin(&pool)
+        .await
+        .expect("begin manual retry intent");
+    let manual = create_transactional_email_intent_in_tx_with_protector(
+        &mut manual_tx,
+        &manual_request,
+        manual_now,
+        &TestSnapshotProtector,
+    )
+    .await
+    .expect("create manual retry intent");
+    manual_tx
+        .commit()
+        .await
+        .expect("commit manual retry intent");
+
+    let manual_first_claim =
+        dispatch_one_due_with_protector(&pool, &TestSnapshotProtector, manual_now)
+            .await
+            .expect("claim manual retry first attempt")
+            .expect("manual retry delivery is due");
+    let manual_failed_at = manual_now + Duration::seconds(1);
+    applier
+        .apply(&event(
+            "evt_dispatch_failed_manual_retry",
+            EMAIL_DISPATCH_OBSERVED_EVENT,
+            &EmailDispatchObserved {
+                delivery_id: manual.delivery_id.clone(),
+                attempt_id: manual_first_claim.attempt_id,
+                function_run_id: manual_first_claim.function_run_id,
+                outcome: DispatchOutcome::TemporaryFailure,
+                provider: "fake".to_owned(),
+                observed_at: manual_failed_at,
+                remote_receipt: None,
+                failure: Some(SanitizedFailure {
+                    code: "provider_temporarily_unavailable".to_owned(),
+                    classification: "temporary_failure".to_owned(),
+                    retry_after_ms: Some(300_000),
+                }),
+            },
+            manual_failed_at,
+        ))
+        .await
+        .expect("schedule manual retry candidate");
+
+    let repository = PostgresNotificationRepository::from_pool(pool.clone());
+    let scheduled = repository
+        .get_delivery(&manual.delivery_id)
+        .await
+        .expect("load retry candidate")
+        .expect("retry candidate exists");
+    assert_eq!(scheduled.delivery.status, "retry_scheduled");
+    let manual_retry_at = manual_failed_at + Duration::seconds(1);
+    let requested = repository
+        .request_manual_retry(
+            &manual.delivery_id,
+            scheduled.delivery.revision,
+            "manual-retry-request-1",
+            "usr_operator",
+            manual_retry_at,
+        )
+        .await
+        .expect("request manual retry");
+    assert!(!requested.idempotent_replay);
+    assert_eq!(requested.scheduled_at, manual_retry_at);
+    let replayed_request = repository
+        .request_manual_retry(
+            &manual.delivery_id,
+            scheduled.delivery.revision,
+            "manual-retry-request-1",
+            "usr_operator",
+            manual_retry_at,
+        )
+        .await
+        .expect("replay manual retry request");
+    assert!(replayed_request.idempotent_replay);
+    assert_eq!(replayed_request.revision, requested.revision);
+    assert_eq!(replayed_request.scheduled_at, requested.scheduled_at);
+
+    let manual_second_claim =
+        dispatch_one_due_with_protector(&pool, &TestSnapshotProtector, manual_retry_at)
+            .await
+            .expect("claim manually accelerated retry")
+            .expect("manual retry is due immediately");
+    assert_eq!(manual_second_claim.delivery_id, manual.delivery_id);
+    let terminal_at = manual_retry_at + Duration::seconds(1);
+    let terminal_event = event(
+        "evt_runtime_terminal_manual_retry",
+        RUNTIME_FUNCTION_TERMINAL_EVENT,
+        &RuntimeFunctionTerminal {
+            failure_classification: "retry_exhausted".to_owned(),
+            failure_code: "provider_runtime_attempts_exhausted".to_owned(),
+            function_name: "lenso.email.dispatch.v1".to_owned(),
+            function_run_id: manual_second_claim.function_run_id,
+            owner_module: "lenso/email-delivery".to_owned(),
+            terminal_state: "dead".to_owned(),
+        },
+        terminal_at,
+    );
+    applier
+        .apply(&terminal_event)
+        .await
+        .expect("record runtime terminal observation");
+    applier
+        .apply(&terminal_event)
+        .await
+        .expect("replay runtime terminal observation idempotently");
+
+    let terminal = repository
+        .get_delivery(&manual.delivery_id)
+        .await
+        .expect("load terminal delivery")
+        .expect("terminal delivery exists");
+    assert_eq!(terminal.delivery.status, "delivery_unknown");
+    assert_eq!(
+        terminal.delivery.final_reason.as_deref(),
+        Some("provider_runtime_terminal_without_business_observation")
+    );
+    assert_eq!(terminal.attempts.len(), 2);
+    assert_eq!(terminal.attempts[0].status, "temporary_failure");
+    assert_eq!(terminal.attempts[1].status, "delivery_unknown");
+    assert_eq!(terminal.receipts.len(), 0);
+    assert_eq!(terminal.retry_requests.len(), 2);
+    assert_eq!(
+        terminal
+            .retry_requests
+            .iter()
+            .filter(|record| record.kind == "manual")
+            .count(),
+        1
+    );
+    assert!(
+        dispatch_one_due_with_protector(
+            &pool,
+            &TestSnapshotProtector,
+            terminal_at + Duration::hours(1),
+        )
+        .await
+        .expect("check terminal retry eligibility")
+        .is_none(),
+        "delivery_unknown must never be retried automatically"
+    );
 }
 
 fn event(
