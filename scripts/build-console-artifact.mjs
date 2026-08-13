@@ -75,17 +75,14 @@ try {
   const archiveName = "lenso-notification.tar.gz";
   const archivePath = join(outputRoot, archiveName);
   const tarPath = join(temporaryRoot, "lenso-notification.tar");
+  const ownershipArguments =
+    process.platform === "darwin"
+      ? ["--uid", "0", "--gid", "0", "--uname", "root", "--gname", "root"]
+      : ["--owner=0", "--group=0", "--numeric-owner", "--sort=name"];
   execFileSync("tar", [
     "--format",
     "ustar",
-    "--uid",
-    "0",
-    "--gid",
-    "0",
-    "--uname",
-    "root",
-    "--gname",
-    "root",
+    ...ownershipArguments,
     "-cf",
     tarPath,
     "-C",
