@@ -3,7 +3,7 @@
 Issues and PRDs that drive this repository live in the central
 `LioRael/lenso` GitHub repository. Use `gh` with `--repo LioRael/lenso` for
 issue operations. Code pull requests live in
-`LioRael/lenso-notification-module`.
+`LioRael/lenso-notification-plugin`.
 
 A pull request implementing a central ticket uses repo-qualified merge-time
 closure syntax:
