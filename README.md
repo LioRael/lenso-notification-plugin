@@ -1,15 +1,18 @@
 # Lenso Notification Plugin
 
 This repository owns removable, PostgreSQL-backed transactional Notification
-behavior for Lenso applications. The first supported purpose is
-`organization-invitation@v1`. SMS, push, campaigns, arbitrary-send operations,
-credential editing, and visual template editing remain outside the boundary.
+behavior for Lenso applications. Supported purposes are
+`organization-invitation@v1` and the four bounded
+`access-request-{submitted,approved,denied,expiring}@v1` lifecycle messages.
+SMS, push, campaigns, arbitrary-send operations, credential editing, and visual
+template editing remain outside the boundary.
 
 The workspace contains four portable Capability Contracts and one native
 implementation:
 
-- `lenso.notification.transactional@1` creates invitation intent and records
-  source lifecycle observations.
+- `lenso.notification.transactional@1` creates invitation intent, creates
+  bounded access-request lifecycle intent, and records invitation source
+  lifecycle observations.
 - `lenso.notification.delivery@1` claims due work and records authoritative
   delivery receipts.
 - `lenso.notification.admin@1` reads the redacted ledger and requests an
@@ -36,6 +39,15 @@ recorded as terminal `delivery_unknown` and is never retried automatically.
 The invitation source may observe `accepted`, `revoked`, or `expired`; each
 caller-scoped, idempotent observation cancels only still-queued or scheduled
 work for that source invitation.
+
+Access-request notification input contains only a request/Organization id,
+recipient, event, bounded role/scope display fields, optional expiry, and
+correlation metadata. There is no arbitrary subject, HTML, template, reason,
+or approval-note field. Notification renders deterministic plaintext and
+HTML-escapes every interpolated value. The exact key
+`access-request:<request_id>:<event>` is required, so the same caller and
+request/event pair deduplicates while changed input conflicts. A successful
+call means only that durable intent was accepted; it never claims delivery.
 
 Schema lifecycle is operator-owned:
 
@@ -71,7 +83,7 @@ objects that slipped into adoption or were added later.
 Legacy adoption records the proven immutable v1 schema only. Operators then
 run `NotificationOperator::upgrade` before selecting a Plugin version whose
 schema plan includes later migrations, including the `expired` invitation
-lifecycle constraint.
+lifecycle constraint and the bounded access-request purpose.
 
 ## vNext compatibility boundary
 
@@ -124,6 +136,7 @@ cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 pnpm install --frozen-lockfile
 pnpm check
+./scripts/check-public-packages.sh
 ```
 
 The PostgreSQL acceptance uses `LENSO_TEST_DATABASE_URL` and refuses destructive

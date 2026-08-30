@@ -10,6 +10,11 @@ packages with distinct identities:
 4. `lenso-capability-notification-transactional`; and
 5. `lenso-notification-plugin`.
 
+Transactional descriptor `1.1.0` is an additive release in the existing
+`lenso.notification.transactional@1` series: existing invitation Providers and
+consumers must regenerate before they claim the new Plugin package version,
+while the Capability identity and existing operation meanings remain stable.
+
 Publication is manual and runs only from a clean `main` checkout through
 `.github/workflows/release-plz.yml`. Pushes to `main` may create or update a
 release pull request, but never publish. A live dispatch requires `live=true`,
@@ -26,6 +31,12 @@ Before first publication of each new crate name:
 4. confirm all four Capability crates are public before the implementation
    crate; and
 5. run the live workflow only after every crate has its matching publisher.
+
+`scripts/check-public-packages.sh` packages each Capability, creates the Plugin
+archive with exact source patches for coordinated unpublished changes, then
+extracts the normalized archives and runs check/test/clippy against those bytes.
+It prevents a workspace path dependency from being silently replaced by an
+older registry Capability during package verification.
 
 The workflow has no registry-token fallback. The live job obtains a short-lived
 crates.io credential through GitHub OIDC and has only the required

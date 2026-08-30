@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["intent_id", "delivery_id", "status", "idempotent_replay"],
+  "properties": {
+    "intent_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "delivery_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "status": { "type": "string", "enum": ["queued"] },
+    "idempotent_replay": { "type": "boolean" }
+  }
+}

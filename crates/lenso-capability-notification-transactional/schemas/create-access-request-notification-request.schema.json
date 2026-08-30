@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request_id",
+    "organization_id",
+    "recipient",
+    "event",
+    "role",
+    "scope",
+    "expires_at",
+    "idempotency_key",
+    "correlation_id",
+    "causation_id",
+    "requested_by"
+  ],
+  "properties": {
+    "request_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "organization_id": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "recipient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "display_name", "locale"],
+      "properties": {
+        "address": { "type": "string", "minLength": 3, "maxLength": 320, "x-lenso-sensitive": true },
+        "display_name": { "type": ["string", "null"], "maxLength": 240, "x-lenso-sensitive": true },
+        "locale": { "type": "string", "enum": ["en", "en-US"] }
+      }
+    },
+    "event": { "type": "string", "enum": ["submitted", "approved", "denied", "expiring"] },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role_id", "display_name"],
+      "properties": {
+        "role_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "display_name": { "type": ["string", "null"], "maxLength": 160 }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "display_name"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "display_name": { "type": ["string", "null"], "maxLength": 240 }
+      }
+    },
+    "expires_at": { "type": ["string", "null"], "format": "date-time", "minLength": 1, "maxLength": 64 },
+    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "correlation_id": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "causation_id": { "type": ["string", "null"], "maxLength": 240 },
+    "requested_by": { "type": ["string", "null"], "maxLength": 240 }
+  }
+}

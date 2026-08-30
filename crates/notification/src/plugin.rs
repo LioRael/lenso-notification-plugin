@@ -27,8 +27,10 @@ use crate::events::{NotificationEventApplier, ObservationEnvelope};
 use crate::migrations::schema_plan;
 use crate::operator::verify_managed_catalog;
 use crate::public::{
-    CreateTransactionalEmailIntent, EmailRecipient, IntentSource, OrganizationInvitationTemplateV1,
-    create_transactional_email_intent_in_tx,
+    AccessRequestNotificationEvent, AccessRequestNotificationTemplateV1, AccessRequestRoleV1,
+    AccessRequestScopeV1, CreateAccessRequestNotificationIntent, CreateTransactionalEmailIntent,
+    EmailRecipient, IntentSource, OrganizationInvitationTemplateV1,
+    create_access_request_notification_in_tx, create_transactional_email_intent_in_tx,
 };
 use crate::repository::{
     ADMIN_ATTEMPT_LIMIT, ADMIN_RECEIPT_LIMIT, ADMIN_RETRY_REQUEST_LIMIT, AttemptRecord,
@@ -244,6 +246,113 @@ impl NotificationPlugin {
             idempotent_replay: receipt.idempotent_replay,
             intent_id: receipt.intent_id,
             status: transactional::CreateOrganizationInvitationResponseStatus::Queued,
+        })
+    }
+
+    async fn create_access_request_notification(
+        &self,
+        context: Ctx,
+        request: transactional::CreateAccessRequestNotificationRequest,
+    ) -> PluginResult<
+        transactional::CreateAccessRequestNotificationResponse,
+        transactional::CreateAccessRequestNotificationError,
+    > {
+        let Some(caller) =
+            authorized_caller(&context, &self.config.transactional_callers).map(str::to_owned)
+        else {
+            return Err(PluginError::domain(
+                transactional::CreateAccessRequestNotificationError::Unauthorized,
+            ));
+        };
+        let now = Utc::now();
+        if !valid_access_request_notification_request(&request, now) {
+            return Err(PluginError::domain(
+                transactional::CreateAccessRequestNotificationError::InvalidIntent,
+            ));
+        }
+        let event = match request.event {
+            transactional::CreateAccessRequestNotificationRequestEvent::Submitted => {
+                AccessRequestNotificationEvent::Submitted
+            }
+            transactional::CreateAccessRequestNotificationRequestEvent::Approved => {
+                AccessRequestNotificationEvent::Approved
+            }
+            transactional::CreateAccessRequestNotificationRequestEvent::Denied => {
+                AccessRequestNotificationEvent::Denied
+            }
+            transactional::CreateAccessRequestNotificationRequestEvent::Expiring => {
+                AccessRequestNotificationEvent::Expiring
+            }
+        };
+        let expires_at = request
+            .expires_at
+            .as_deref()
+            .map(parse_time)
+            .transpose()
+            .map_err(|_| {
+                PluginError::domain(
+                    transactional::CreateAccessRequestNotificationError::InvalidIntent,
+                )
+            })?;
+        let locale = match request.recipient.locale {
+            transactional::CreateAccessRequestNotificationRequestRecipientLocale::En => "en",
+            transactional::CreateAccessRequestNotificationRequestRecipientLocale::EnUS => "en-US",
+        };
+        let intent = CreateAccessRequestNotificationIntent {
+            source: IntentSource {
+                module_id: caller,
+                entity_type: "access_request".to_owned(),
+                entity_id: request.request_id.clone(),
+            },
+            recipient: EmailRecipient {
+                address: request.recipient.address,
+                display_name: request.recipient.display_name,
+                locale: locale.to_owned(),
+            },
+            template: AccessRequestNotificationTemplateV1 {
+                request_id: request.request_id,
+                organization_id: request.organization_id,
+                event,
+                role: AccessRequestRoleV1 {
+                    role_id: request.role.role_id,
+                    display_name: request.role.display_name,
+                },
+                scope: AccessRequestScopeV1 {
+                    kind: request.scope.kind,
+                    id: request.scope.id,
+                    display_name: request.scope.display_name,
+                },
+                expires_at,
+            },
+            idempotency_key: request.idempotency_key,
+            correlation_id: request.correlation_id,
+            causation_id: request.causation_id,
+            requested_by: request.requested_by,
+        };
+        let prepared = self.prepared().map_err(PluginError::runtime)?;
+        let mut transaction = prepared
+            .postgres
+            .pool()
+            .begin()
+            .await
+            .map_err(|error| PluginError::runtime(runtime(error)))?;
+        let receipt = create_access_request_notification_in_tx(
+            &mut transaction,
+            &intent,
+            now,
+            &prepared.protector,
+        )
+        .await
+        .map_err(map_access_request_create_error)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| PluginError::runtime(runtime(error)))?;
+        Ok(transactional::CreateAccessRequestNotificationResponse {
+            delivery_id: receipt.delivery_id,
+            idempotent_replay: receipt.idempotent_replay,
+            intent_id: receipt.intent_id,
+            status: transactional::CreateAccessRequestNotificationResponseStatus::Queued,
         })
     }
 
@@ -624,6 +733,48 @@ fn valid_create_request(
         && valid_time(&request.template.expires_at)
         && parse_time(&request.template.expires_at).is_ok_and(|expires_at| expires_at > now)
         && required_bounded(&request.idempotency_key, 1, 240)
+        && required_bounded(&request.correlation_id, 1, 240)
+        && optional_bounded(request.causation_id.as_deref(), 240)
+        && optional_bounded(request.requested_by.as_deref(), 240)
+}
+
+fn valid_access_request_notification_request(
+    request: &transactional::CreateAccessRequestNotificationRequest,
+    now: DateTime<Utc>,
+) -> bool {
+    let event = match &request.event {
+        transactional::CreateAccessRequestNotificationRequestEvent::Submitted => "submitted",
+        transactional::CreateAccessRequestNotificationRequestEvent::Approved => "approved",
+        transactional::CreateAccessRequestNotificationRequestEvent::Denied => "denied",
+        transactional::CreateAccessRequestNotificationRequestEvent::Expiring => "expiring",
+    };
+    let expected_idempotency_key = format!("access-request:{}:{event}", request.request_id);
+    let expiry = request
+        .expires_at
+        .as_deref()
+        .and_then(|value| parse_time(value).ok());
+    let expiry_valid = match &request.event {
+        transactional::CreateAccessRequestNotificationRequestEvent::Expiring => {
+            expiry.is_some_and(|value| value > now)
+        }
+        transactional::CreateAccessRequestNotificationRequestEvent::Denied => {
+            request.expires_at.is_none()
+        }
+        _ => request.expires_at.is_none() || expiry.is_some_and(|value| value > now),
+    };
+    required_bounded(&request.request_id, 1, 160)
+        && required_bounded(&request.organization_id, 1, 240)
+        && required_bounded(&request.recipient.address, 3, 320)
+        && request.recipient.address.contains('@')
+        && optional_bounded(request.recipient.display_name.as_deref(), 240)
+        && required_bounded(&request.role.role_id, 1, 160)
+        && optional_bounded(request.role.display_name.as_deref(), 160)
+        && required_bounded(&request.scope.kind, 1, 160)
+        && required_bounded(&request.scope.id, 1, 240)
+        && optional_bounded(request.scope.display_name.as_deref(), 240)
+        && request.expires_at.as_deref().is_none_or(valid_time)
+        && expiry_valid
+        && request.idempotency_key == expected_idempotency_key
         && required_bounded(&request.correlation_id, 1, 240)
         && optional_bounded(request.causation_id.as_deref(), 240)
         && optional_bounded(request.requested_by.as_deref(), 240)
@@ -1159,6 +1310,22 @@ fn map_create_error(
     }
 }
 
+fn map_access_request_create_error(
+    error: NotificationError,
+) -> PluginError<transactional::CreateAccessRequestNotificationError> {
+    match error.code {
+        ErrorCode::Validation => {
+            PluginError::domain(transactional::CreateAccessRequestNotificationError::InvalidIntent)
+        }
+        ErrorCode::Conflict => PluginError::domain(
+            transactional::CreateAccessRequestNotificationError::IdempotencyConflict,
+        ),
+        ErrorCode::NotFound | ErrorCode::EvidenceOverflow | ErrorCode::Internal => {
+            PluginError::runtime(runtime(error))
+        }
+    }
+}
+
 fn map_lifecycle_error(
     error: NotificationError,
 ) -> PluginError<transactional::ObserveInvitationLifecycleError> {
@@ -1329,6 +1496,22 @@ mod tests {
     }
 
     impl transactional::TransactionalProvider for FixtureTransactionalProvider {
+        fn create_access_request_notification(
+            &self,
+            _context: InvocationContext,
+            _request: transactional::CreateAccessRequestNotificationRequest,
+        ) -> NativeRequestFuture<transactional::TransactionalCreateAccessRequestNotification>
+        {
+            Box::pin(std::future::ready(Ok(Ok(
+                transactional::CreateAccessRequestNotificationResponse {
+                    delivery_id: "ntf_dlv_access_fixture".to_owned(),
+                    idempotent_replay: false,
+                    intent_id: "ntf_int_access_fixture".to_owned(),
+                    status: transactional::CreateAccessRequestNotificationResponseStatus::Queued,
+                },
+            ))))
+        }
+
         fn create_organization_invitation(
             &self,
             _context: InvocationContext,
@@ -1526,10 +1709,9 @@ mod tests {
         let source = intent_source("organization-blue".to_owned(), request.source);
         assert_eq!(source.module_id, "organization-blue");
 
-        let transactional_schema: serde_json::Value = serde_json::from_str(include_str!(
-            "../../lenso-capability-notification-transactional/schemas/create-organization-invitation-request.schema.json"
-        ))
-        .expect("transactional request schema");
+        let transactional_schema: serde_json::Value =
+            serde_json::from_str(transactional::CREATE_ORGANIZATION_INVITATION_REQUEST_SCHEMA_JSON)
+                .expect("transactional request schema");
         assert!(
             transactional_schema["properties"]["source"]["properties"]
                 .get("plugin_id")
@@ -1553,10 +1735,9 @@ mod tests {
             Utc::now(),
         );
         assert_eq!(receipt.source, "email-provider-blue");
-        let delivery_schema: serde_json::Value = serde_json::from_str(include_str!(
-            "../../lenso-capability-notification-delivery/schemas/observe-receipt-request.schema.json"
-        ))
-        .expect("receipt request schema");
+        let delivery_schema: serde_json::Value =
+            serde_json::from_str(delivery::OBSERVE_RECEIPT_REQUEST_SCHEMA_JSON)
+                .expect("receipt request schema");
         assert!(delivery_schema["properties"].get("source").is_none());
     }
 
@@ -1610,6 +1791,22 @@ mod tests {
                 ))
             ));
         }
+
+        let mut invalid_access_request = generated_access_request();
+        invalid_access_request.idempotency_key = "caller-selected".to_owned();
+        assert!(!valid_access_request_notification_request(
+            &invalid_access_request,
+            now
+        ));
+        assert!(matches!(
+            futures::executor::block_on(unprepared_plugin().create_access_request_notification(
+                caller_context("organization-blue"),
+                invalid_access_request,
+            )),
+            Err(PluginError::Domain(
+                transactional::CreateAccessRequestNotificationError::InvalidIntent
+            ))
+        ));
 
         let lifecycle = transactional::ObserveInvitationLifecycleRequest {
             invitation_id: "invite".to_owned(),
@@ -2225,6 +2422,7 @@ mod tests {
                 transactional::CAPABILITY_ID,
                 transactional::DESCRIPTOR_VERSION,
                 [
+                    transactional::CREATE_ACCESS_REQUEST_NOTIFICATION_OPERATION,
                     transactional::CREATE_ORGANIZATION_INVITATION_OPERATION,
                     transactional::OBSERVE_INVITATION_LIFECYCLE_OPERATION,
                 ],
@@ -2470,6 +2668,33 @@ mod tests {
                 organization_id: "org_fixture".to_owned(),
                 organization_name: "Fixture Organization".to_owned(),
                 role_name: Some("Member".to_owned()),
+            },
+        }
+    }
+
+    fn generated_access_request() -> transactional::CreateAccessRequestNotificationRequest {
+        transactional::CreateAccessRequestNotificationRequest {
+            causation_id: Some("access_request_fixture:submitted".to_owned()),
+            correlation_id: "corr_access_request_fixture".to_owned(),
+            event: transactional::CreateAccessRequestNotificationRequestEvent::Submitted,
+            expires_at: Some("2026-09-01T00:00:00Z".to_owned()),
+            idempotency_key: "access-request:ar_fixture:submitted".to_owned(),
+            organization_id: "org_fixture".to_owned(),
+            recipient: transactional::CreateAccessRequestNotificationRequestRecipient {
+                address: "requester@example.com".to_owned(),
+                display_name: Some("Requester".to_owned()),
+                locale: transactional::CreateAccessRequestNotificationRequestRecipientLocale::En,
+            },
+            request_id: "ar_fixture".to_owned(),
+            requested_by: Some("subject_fixture".to_owned()),
+            role: transactional::CreateAccessRequestNotificationRequestRole {
+                display_name: Some("Member".to_owned()),
+                role_id: "role_member".to_owned(),
+            },
+            scope: transactional::CreateAccessRequestNotificationRequestScope {
+                display_name: Some("Fixture Organization".to_owned()),
+                id: "org_fixture".to_owned(),
+                kind: "organization".to_owned(),
             },
         }
     }

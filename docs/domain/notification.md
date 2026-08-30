@@ -6,15 +6,14 @@ status. It does not own SMTP credentials, provider accounts, raw provider
 transcripts, Kernel execution records, SMS, push, campaigns, or template
 editing.
 
-## First workflow
+## Transactional workflows
 
-1. An authorized business Plugin calls
-   `lenso.notification.transactional@1/create_organization_invitation`. The
-   caller Instance, not a payload field, becomes the source identity and
-   idempotency scope.
-2. Notification renders and pins `organization-invitation@v1`, protects the
-   recipient and subject/text/HTML, and commits one queued delivery in its own
-   transaction.
+1. An authorized business Plugin calls the exact generated invitation or
+   access-request operation on `lenso.notification.transactional@1`. The caller
+   Instance, not a payload field, becomes the source identity and idempotency
+   scope.
+2. Notification renders and pins one fixed v1 template, protects the recipient
+   and subject/text/HTML, and commits one queued delivery in its own transaction.
 3. An authorized worker calls `lenso.notification.delivery@1/dispatch_due`.
    Notification atomically appends one immutable attempt before invoking the
    exact bound `lenso.email-dispatch@1` Provider.
@@ -28,6 +27,13 @@ Invitation sources may observe `accepted`, `revoked`, or `expired`. Each state
 terminalizes only queued or retry-scheduled delivery work that predates the
 observation; source identity remains caller-derived and the observation is
 idempotent.
+
+Access-request lifecycle intent is limited to submitted, approved, denied, and
+expiring. Role/scope data is display-only and bounded. The Capability has no
+arbitrary HTML/template field and no reason or approval-note field. Rendering
+is deterministic and HTML-escapes every interpolated value. The mandatory
+`access-request:<request_id>:<event>` key makes one caller's request/event pair
+idempotent; changed input conflicts. Intent acceptance is not delivery proof.
 
 The generated request Capability is used because durable success and
 Domain/Runtime failure classification matter. Kernel Event fanout is volatile

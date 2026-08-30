@@ -5,7 +5,7 @@ use lenso_kernel::{InvocationContext, NativeRequestEndpoint, NativeRequestFuture
 
 use lenso_plugin_authoring::{BoundCapabilityClient, CapabilityClient, CapabilityClientMany};
 pub const CAPABILITY_ID: &str = "lenso.notification.transactional@1";
-pub const DESCRIPTOR_VERSION: &str = "1.0.0";
+pub const DESCRIPTOR_VERSION: &str = "1.1.0";
 pub const PORTABLE: bool = true;
 pub const CROSS_LANE_TRANSFER: bool = true;
 pub const TRANSACTIONAL_CAPABILITY_ID: &str = CAPABILITY_ID;
@@ -13,21 +13,156 @@ pub const TRANSACTIONAL_DESCRIPTOR_VERSION: &str = DESCRIPTOR_VERSION;
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __lenso_provided_transactional { () => { "{\"capability_id\":\"lenso.notification.transactional@1\",\"descriptor_version\":\"1.0.0\",\"operations\":[\"create_organization_invitation\",\"observe_invitation_lifecycle\"],\"operation_kinds\":{},\"default_admission\":{\"queue_capacity\":0,\"max_concurrency\":1},\"operation_admissions\":{},\"event_admission\":null,\"cross_lane_transfer\":true}" }; }
+macro_rules! __lenso_provided_transactional { () => { "{\"capability_id\":\"lenso.notification.transactional@1\",\"descriptor_version\":\"1.1.0\",\"operations\":[\"create_access_request_notification\",\"create_organization_invitation\",\"observe_invitation_lifecycle\"],\"operation_kinds\":{},\"default_admission\":{\"queue_capacity\":0,\"max_concurrency\":1},\"operation_admissions\":{},\"event_admission\":null,\"cross_lane_transfer\":true}" }; }
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __lenso_required_transactional_client { () => { "{\"capability_id\":\"lenso.notification.transactional@1\",\"descriptor_version\":\"1.0.0\",\"cardinality\":\"one\"}" }; }
+macro_rules! __lenso_required_transactional_client { () => { "{\"capability_id\":\"lenso.notification.transactional@1\",\"descriptor_version\":\"1.1.0\",\"cardinality\":\"one\"}" }; }
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __lenso_required_many_transactional_client { () => { "{\"capability_id\":\"lenso.notification.transactional@1\",\"descriptor_version\":\"1.0.0\",\"cardinality\":\"many\"}" }; }
+macro_rules! __lenso_required_many_transactional_client { () => { "{\"capability_id\":\"lenso.notification.transactional@1\",\"descriptor_version\":\"1.1.0\",\"cardinality\":\"many\"}" }; }
 
+pub const CREATE_ACCESS_REQUEST_NOTIFICATION_OPERATION: &str = "create_access_request_notification";
 pub const CREATE_ORGANIZATION_INVITATION_OPERATION: &str = "create_organization_invitation";
 pub const OBSERVE_INVITATION_LIFECYCLE_OPERATION: &str = "observe_invitation_lifecycle";
 
 pub use lenso_contract_runtime::{Timestamp, UnknownDomainError};
 use lenso_contract_runtime::{decode_portable_json, encode_portable_json};
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CreateAccessRequestNotificationRequest {
+    #[serde(rename = "causation_id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub causation_id: Option<String>,
+    #[serde(rename = "correlation_id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub correlation_id: String,
+    #[serde(rename = "event")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub event: CreateAccessRequestNotificationRequestEvent,
+    #[serde(rename = "expires_at")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub expires_at: Option<Timestamp>,
+    #[serde(rename = "idempotency_key")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub idempotency_key: String,
+    #[serde(rename = "organization_id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub organization_id: String,
+    #[serde(rename = "recipient")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub recipient: CreateAccessRequestNotificationRequestRecipient,
+    #[serde(rename = "request_id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub request_id: String,
+    #[serde(rename = "requested_by")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub requested_by: Option<String>,
+    #[serde(rename = "role")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub role: CreateAccessRequestNotificationRequestRole,
+    #[serde(rename = "scope")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub scope: CreateAccessRequestNotificationRequestScope,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum CreateAccessRequestNotificationRequestEvent {
+    #[serde(rename = "submitted")]
+    Submitted,
+    #[serde(rename = "approved")]
+    Approved,
+    #[serde(rename = "denied")]
+    Denied,
+    #[serde(rename = "expiring")]
+    Expiring,
+}
+
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CreateAccessRequestNotificationRequestRecipient {
+    #[serde(rename = "address")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub address: String,
+    #[serde(rename = "display_name")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub display_name: Option<String>,
+    #[serde(rename = "locale")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub locale: CreateAccessRequestNotificationRequestRecipientLocale,
+}
+
+impl fmt::Debug for CreateAccessRequestNotificationRequestRecipient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreateAccessRequestNotificationRequestRecipient")
+            .field("address", &"<redacted>")
+            .field("display_name", &"<redacted>")
+            .field("locale", &self.locale)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum CreateAccessRequestNotificationRequestRecipientLocale {
+    #[serde(rename = "en")]
+    En,
+    #[serde(rename = "en-US")]
+    EnUS,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CreateAccessRequestNotificationRequestRole {
+    #[serde(rename = "display_name")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub display_name: Option<String>,
+    #[serde(rename = "role_id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub role_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CreateAccessRequestNotificationRequestScope {
+    #[serde(rename = "display_name")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub display_name: Option<String>,
+    #[serde(rename = "id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub id: String,
+    #[serde(rename = "kind")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CreateAccessRequestNotificationResponse {
+    #[serde(rename = "delivery_id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub delivery_id: String,
+    #[serde(rename = "idempotent_replay")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub idempotent_replay: bool,
+    #[serde(rename = "intent_id")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub intent_id: String,
+    #[serde(rename = "status")]
+    #[serde(deserialize_with = "lenso_contract_runtime::serde::deserialize_required")]
+    pub status: CreateAccessRequestNotificationResponseStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum CreateAccessRequestNotificationResponseStatus {
+    #[serde(rename = "queued")]
+    Queued,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CreateAccessRequestNotificationError {
+    IdempotencyConflict,
+    InvalidIntent,
+    Unauthorized,
+    Unknown(UnknownDomainError),
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CreateOrganizationInvitationRequest {
@@ -211,6 +346,29 @@ pub enum ObserveInvitationLifecycleError {
 }
 
 #[derive(Debug)]
+pub struct TransactionalCreateAccessRequestNotification;
+impl RequestCapability for TransactionalCreateAccessRequestNotification {
+    type Request = CreateAccessRequestNotificationRequest;
+    type Response = CreateAccessRequestNotificationResponse;
+    type DomainError = CreateAccessRequestNotificationError;
+    const ID: &'static str = CAPABILITY_ID;
+    const DESCRIPTOR_VERSION: &'static str = DESCRIPTOR_VERSION;
+
+    fn invoke_native(endpoint: &dyn NativeRequestEndpoint, operation: &str, request: Self::Request, context: InvocationContext) -> NativeRequestFuture<Self> {
+        if operation != CREATE_ACCESS_REQUEST_NOTIFICATION_OPERATION {
+            return lenso_kernel::invoke_typed_or_erased_native_request::<Self>(endpoint, operation, request, context);
+        }
+        let Some(typed_endpoint) = endpoint
+            .typed_endpoint()
+            .and_then(|endpoint| endpoint.downcast_ref::<TransactionalRequestEndpoint>())
+        else {
+            return lenso_kernel::invoke_typed_or_erased_native_request::<Self>(endpoint, operation, request, context);
+        };
+        Rc::clone(&typed_endpoint.provider).create_access_request_notification(context, request)
+    }
+}
+
+#[derive(Debug)]
 pub struct TransactionalCreateOrganizationInvitation;
 impl RequestCapability for TransactionalCreateOrganizationInvitation {
     type Request = CreateOrganizationInvitationRequest;
@@ -253,6 +411,57 @@ impl RequestCapability for TransactionalObserveInvitationLifecycle {
             return lenso_kernel::invoke_typed_or_erased_native_request::<Self>(endpoint, operation, request, context);
         };
         Rc::clone(&typed_endpoint.provider).observe_invitation_lifecycle(context, request)
+    }
+}
+
+impl serde::Serialize for CreateAccessRequestNotificationError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        match self {
+            Self::IdempotencyConflict => serializer.serialize_str("idempotency_conflict"),
+            Self::InvalidIntent => serializer.serialize_str("invalid_intent"),
+            Self::Unauthorized => serializer.serialize_str("unauthorized"),
+            Self::Unknown(value) => {
+                let mut map = serializer.serialize_map(Some(1 + usize::from(value.payload.is_some()) + value.extra.len()))?;
+                map.serialize_entry("code", &value.code)?;
+                if let Some(payload) = &value.payload {
+                    map.serialize_entry("payload", payload)?;
+                }
+                for (key, extra) in &value.extra {
+                    map.serialize_entry(key, extra)?;
+                }
+                map.end()
+            },
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CreateAccessRequestNotificationError {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(code) => match code.as_str() {
+                "idempotency_conflict" => Ok(Self::IdempotencyConflict),
+                "invalid_intent" => Ok(Self::InvalidIntent),
+                "unauthorized" => Ok(Self::Unauthorized),
+                _ => Ok(Self::Unknown(UnknownDomainError { code, payload: None, extra: std::collections::BTreeMap::new() })),
+            },
+            serde_json::Value::Object(mut object) => {
+                let Some(code) = object.remove("code").and_then(|value| value.as_str().map(ToOwned::to_owned)) else {
+                    return Err(serde::de::Error::custom("Domain Error object is missing a string code"));
+                };
+                let payload = object.remove("payload");
+                let extra = object.into_iter().collect::<std::collections::BTreeMap<_, _>>();
+                Ok(Self::Unknown(UnknownDomainError { code, payload, extra }))
+            }
+            other => Err(serde::de::Error::custom(format!("Domain Error must be a string or object, got {other}"))),
+        }
     }
 }
 
@@ -358,6 +567,13 @@ impl<'de> serde::Deserialize<'de> for ObserveInvitationLifecycleError {
     }
 }
 
+pub fn encode_create_access_request_notification_request(value: &CreateAccessRequestNotificationRequest) -> Result<String, serde_json::Error> { encode_portable_json(value) }
+pub fn decode_create_access_request_notification_request(wire: &str) -> Result<CreateAccessRequestNotificationRequest, serde_json::Error> { decode_portable_json(wire) }
+pub fn encode_create_access_request_notification_response(value: &CreateAccessRequestNotificationResponse) -> Result<String, serde_json::Error> { encode_portable_json(value) }
+pub fn decode_create_access_request_notification_response(wire: &str) -> Result<CreateAccessRequestNotificationResponse, serde_json::Error> { decode_portable_json(wire) }
+pub fn encode_create_access_request_notification_error(value: &CreateAccessRequestNotificationError) -> Result<String, serde_json::Error> { encode_portable_json(value) }
+pub fn decode_create_access_request_notification_error(wire: &str) -> Result<CreateAccessRequestNotificationError, serde_json::Error> { decode_portable_json(wire) }
+
 pub fn encode_create_organization_invitation_request(value: &CreateOrganizationInvitationRequest) -> Result<String, serde_json::Error> { encode_portable_json(value) }
 pub fn decode_create_organization_invitation_request(wire: &str) -> Result<CreateOrganizationInvitationRequest, serde_json::Error> { decode_portable_json(wire) }
 pub fn encode_create_organization_invitation_response(value: &CreateOrganizationInvitationResponse) -> Result<String, serde_json::Error> { encode_portable_json(value) }
@@ -371,6 +587,35 @@ pub fn encode_observe_invitation_lifecycle_response(value: &ObserveInvitationLif
 pub fn decode_observe_invitation_lifecycle_response(wire: &str) -> Result<ObserveInvitationLifecycleResponse, serde_json::Error> { decode_portable_json(wire) }
 pub fn encode_observe_invitation_lifecycle_error(value: &ObserveInvitationLifecycleError) -> Result<String, serde_json::Error> { encode_portable_json(value) }
 pub fn decode_observe_invitation_lifecycle_error(wire: &str) -> Result<ObserveInvitationLifecycleError, serde_json::Error> { decode_portable_json(wire) }
+
+#[doc(hidden)]
+pub trait __LensoIntoTransactionalCreateAccessRequestNotificationResult {
+    fn __lenso_into_result(self) -> Result<Result<CreateAccessRequestNotificationResponse, CreateAccessRequestNotificationError>, RuntimeFailure>;
+}
+impl __LensoIntoTransactionalCreateAccessRequestNotificationResult for Result<CreateAccessRequestNotificationResponse, CreateAccessRequestNotificationError> {
+    fn __lenso_into_result(self) -> Result<Result<CreateAccessRequestNotificationResponse, CreateAccessRequestNotificationError>, RuntimeFailure> { Ok(self) }
+}
+impl __LensoIntoTransactionalCreateAccessRequestNotificationResult for Result<Result<CreateAccessRequestNotificationResponse, CreateAccessRequestNotificationError>, RuntimeFailure> {
+    fn __lenso_into_result(self) -> Result<Result<CreateAccessRequestNotificationResponse, CreateAccessRequestNotificationError>, RuntimeFailure> { self }
+}
+impl __LensoIntoTransactionalCreateAccessRequestNotificationResult for Result<CreateAccessRequestNotificationResponse, lenso_plugin_authoring::PluginError<CreateAccessRequestNotificationError, RuntimeFailure>> {
+    fn __lenso_into_result(self) -> Result<Result<CreateAccessRequestNotificationResponse, CreateAccessRequestNotificationError>, RuntimeFailure> {
+        match self {
+            Ok(value) => Ok(Ok(value)),
+            Err(lenso_plugin_authoring::PluginError::Domain(error)) => Ok(Err(error)),
+            Err(lenso_plugin_authoring::PluginError::Runtime(error)) => Err(error),
+        }
+    }
+}
+impl __LensoIntoTransactionalCreateAccessRequestNotificationResult for Result<CreateAccessRequestNotificationResponse, TransactionalCreateAccessRequestNotificationInvocationError> {
+    fn __lenso_into_result(self) -> Result<Result<CreateAccessRequestNotificationResponse, CreateAccessRequestNotificationError>, RuntimeFailure> {
+        match self {
+            Ok(value) => Ok(Ok(value)),
+            Err(TransactionalCreateAccessRequestNotificationInvocationError::Domain(error)) => Ok(Err(error)),
+            Err(TransactionalCreateAccessRequestNotificationInvocationError::Runtime(error)) => Err(error),
+        }
+    }
+}
 
 #[doc(hidden)]
 pub trait __LensoIntoTransactionalCreateOrganizationInvitationResult {
@@ -431,6 +676,7 @@ impl __LensoIntoTransactionalObserveInvitationLifecycleResult for Result<Observe
 }
 
 pub trait TransactionalProvider: fmt::Debug + 'static {
+    fn create_access_request_notification(&self, context: InvocationContext, request: CreateAccessRequestNotificationRequest) -> NativeRequestFuture<TransactionalCreateAccessRequestNotification>;
     fn create_organization_invitation(&self, context: InvocationContext, request: CreateOrganizationInvitationRequest) -> NativeRequestFuture<TransactionalCreateOrganizationInvitation>;
     fn observe_invitation_lifecycle(&self, context: InvocationContext, request: ObserveInvitationLifecycleRequest) -> NativeRequestFuture<TransactionalObserveInvitationLifecycle>;
 }
@@ -441,6 +687,13 @@ macro_rules! __lenso_native_lower_transactional {
     ($plugin:ty, $support:path) => {
         use $support as __LensoNativeSupportTransactional;
         impl $crate::TransactionalProvider for $plugin {
+        fn create_access_request_notification(&self, context: __LensoNativeSupportTransactional::InvocationContext, request: $crate::CreateAccessRequestNotificationRequest) -> __LensoNativeSupportTransactional::NativeRequestFuture<$crate::TransactionalCreateAccessRequestNotification> {
+            let plugin = self.clone();
+            ::std::boxed::Box::pin(async move {
+                let result = <$plugin>::create_access_request_notification(&plugin, context, request).await;
+                $crate::__LensoIntoTransactionalCreateAccessRequestNotificationResult::__lenso_into_result(result)
+            })
+        }
         fn create_organization_invitation(&self, context: __LensoNativeSupportTransactional::InvocationContext, request: $crate::CreateOrganizationInvitationRequest) -> __LensoNativeSupportTransactional::NativeRequestFuture<$crate::TransactionalCreateOrganizationInvitation> {
             let plugin = self.clone();
             ::std::boxed::Box::pin(async move {
@@ -476,12 +729,26 @@ impl<P: TransactionalProvider> NativeRequestEndpoint for TransactionalEndpoint<P
     fn capability_id(&self) -> &'static str { CAPABILITY_ID }
     fn descriptor_version(&self) -> &'static str { DESCRIPTOR_VERSION }
     fn operations(&self) -> &'static [&'static str] { &[
+        CREATE_ACCESS_REQUEST_NOTIFICATION_OPERATION,
         CREATE_ORGANIZATION_INVITATION_OPERATION,
         OBSERVE_INVITATION_LIFECYCLE_OPERATION,
     ] }
     fn typed_endpoint(&self) -> Option<&dyn std::any::Any> { Some(&self.request_endpoint) }
     fn invoke(&self, operation: &str, request: Box<dyn std::any::Any>, context: InvocationContext) -> LocalBoxFuture<'static, Result<Result<Box<dyn std::any::Any>, Box<dyn std::any::Any>>, RuntimeFailure>> {
         match operation {
+            CREATE_ACCESS_REQUEST_NOTIFICATION_OPERATION => {
+                let Ok(request) = request.downcast::<CreateAccessRequestNotificationRequest>() else {
+                    return Box::pin(futures::future::ready(Err(RuntimeFailure::ProtocolViolation { capability: CAPABILITY_ID })));
+                };
+                let invocation = Rc::clone(&self.provider).create_access_request_notification(context, *request);
+                Box::pin(async move {
+                    invocation.await.map(|result| {
+                        result
+                            .map(|value| Box::new(value) as Box<dyn std::any::Any>)
+                            .map_err(|error| Box::new(error) as Box<dyn std::any::Any>)
+                    })
+                })
+            },
             CREATE_ORGANIZATION_INVITATION_OPERATION => {
                 let Ok(request) = request.downcast::<CreateOrganizationInvitationRequest>() else {
                     return Box::pin(futures::future::ready(Err(RuntimeFailure::ProtocolViolation { capability: CAPABILITY_ID })));
@@ -545,12 +812,25 @@ macro_rules! __lenso_native_provide_transactional {
 
 #[derive(Debug)]
 pub struct TransactionalClient {
+    create_access_request_notification: NativeRequestHandle<TransactionalCreateAccessRequestNotification>,
     create_organization_invitation: NativeRequestHandle<TransactionalCreateOrganizationInvitation>,
     observe_invitation_lifecycle: NativeRequestHandle<TransactionalObserveInvitationLifecycle>,
 }
 impl TransactionalClient {
     pub fn from_dependencies(dependencies: &PluginDependencies) -> Result<Self, RuntimeFailure> {
         <Self as CapabilityClient>::from_dependencies(dependencies)
+    }
+
+    pub async fn create_access_request_notification(&self, request: CreateAccessRequestNotificationRequest) -> Result<CreateAccessRequestNotificationResponse, TransactionalCreateAccessRequestNotificationInvocationError> {
+        self.create_access_request_notification.invoke(CREATE_ACCESS_REQUEST_NOTIFICATION_OPERATION, request).await
+            .map_err(TransactionalCreateAccessRequestNotificationInvocationError::Runtime)?
+            .map_err(TransactionalCreateAccessRequestNotificationInvocationError::Domain)
+    }
+
+    pub async fn create_access_request_notification_with_context(&self, context: InvocationContext, request: CreateAccessRequestNotificationRequest) -> Result<CreateAccessRequestNotificationResponse, TransactionalCreateAccessRequestNotificationInvocationError> {
+        self.create_access_request_notification.invoke_with_context(CREATE_ACCESS_REQUEST_NOTIFICATION_OPERATION, context, request).await
+            .map_err(TransactionalCreateAccessRequestNotificationInvocationError::Runtime)?
+            .map_err(TransactionalCreateAccessRequestNotificationInvocationError::Domain)
     }
 
     pub async fn create_organization_invitation(&self, request: CreateOrganizationInvitationRequest) -> Result<CreateOrganizationInvitationResponse, TransactionalCreateOrganizationInvitationInvocationError> {
@@ -587,6 +867,7 @@ impl CapabilityClient for TransactionalClient {
 
     fn from_dependencies(dependencies: &PluginDependencies) -> Result<Self, RuntimeFailure> {
         Ok(Self {
+            create_access_request_notification: dependencies.one::<TransactionalCreateAccessRequestNotification>()?,
             create_organization_invitation: dependencies.one::<TransactionalCreateOrganizationInvitation>()?,
             observe_invitation_lifecycle: dependencies.one::<TransactionalObserveInvitationLifecycle>()?,
         })
@@ -611,6 +892,7 @@ impl CapabilityClientMany for TransactionalClient {
                 Ok(BoundCapabilityClient::new(
                     binding.provider_instance(),
                     Self {
+                    create_access_request_notification: binding.handle().ok_or(RuntimeFailure::Unavailable { capability: CAPABILITY_ID })?.typed::<TransactionalCreateAccessRequestNotification>()?,
                     create_organization_invitation: binding.handle().ok_or(RuntimeFailure::Unavailable { capability: CAPABILITY_ID })?.typed::<TransactionalCreateOrganizationInvitation>()?,
                     observe_invitation_lifecycle: binding.handle().ok_or(RuntimeFailure::Unavailable { capability: CAPABILITY_ID })?.typed::<TransactionalObserveInvitationLifecycle>()?,
                     },
@@ -620,6 +902,11 @@ impl CapabilityClientMany for TransactionalClient {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum TransactionalCreateAccessRequestNotificationInvocationError {
+    Domain(CreateAccessRequestNotificationError),
+    Runtime(RuntimeFailure),
+}
 #[derive(Clone, Debug, PartialEq)]
 pub enum TransactionalCreateOrganizationInvitationInvocationError {
     Domain(CreateOrganizationInvitationError),

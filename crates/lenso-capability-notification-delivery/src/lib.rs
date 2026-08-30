@@ -12,3 +12,7 @@ mod generated {
 }
 
 pub use generated::*;
+
+/// Source request Schema used by conformance and package-boundary tests.
+pub const OBSERVE_RECEIPT_REQUEST_SCHEMA_JSON: &str =
+    include_str!("../schemas/observe-receipt-request.schema.json");
