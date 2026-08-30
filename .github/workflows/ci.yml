@@ -11,13 +11,13 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     env:
-      LENSO_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/notification_test
+      LENSO_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/notification_test
     services:
       postgres:
         image: postgres:18
         env:
           POSTGRES_DB: notification_test
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_USER: postgres
         ports:
           - 5432:5432
