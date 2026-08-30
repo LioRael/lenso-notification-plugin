@@ -11,6 +11,11 @@ pub const NOTIFICATION_MIGRATIONS: &[Migration] = sql_migrations![
         "add-expired-invitation-lifecycle",
         "migrations/0002_add_expired_invitation_lifecycle.sql",
     ),
+    (
+        3,
+        "add-access-request-purpose",
+        "migrations/0003_add_access_request_purpose.sql",
+    ),
 ];
 
 pub fn schema_plan(schema: impl Into<std::sync::Arc<str>>) -> Result<SchemaPlan, PlanError> {

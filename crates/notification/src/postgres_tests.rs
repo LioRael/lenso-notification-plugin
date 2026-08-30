@@ -13,8 +13,10 @@ use crate::events::{NotificationEventApplier, ObservationEnvelope};
 use crate::operator::{NotificationOperator, NotificationOperatorError};
 use crate::plugin::format_time;
 use crate::public::{
-    CreateTransactionalEmailIntent, EmailRecipient, IntentSource, OrganizationInvitationTemplateV1,
-    create_transactional_email_intent_in_tx,
+    AccessRequestNotificationEvent, AccessRequestNotificationTemplateV1, AccessRequestRoleV1,
+    AccessRequestScopeV1, CreateAccessRequestNotificationIntent, CreateTransactionalEmailIntent,
+    EmailRecipient, IntentSource, OrganizationInvitationTemplateV1,
+    create_access_request_notification_in_tx, create_transactional_email_intent_in_tx,
 };
 use crate::repository::PostgresNotificationRepository;
 use crate::runtime::claim_one_due;
@@ -460,6 +462,108 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
     .await
     .expect("read expired lifecycle");
     assert_eq!(expired_lifecycle, "expired");
+
+    truncate_notification_ledger(&pool).await;
+    let access_request =
+        access_request_notification(now, AccessRequestNotificationEvent::Submitted);
+    let mut access_tx = pool.begin().await.expect("begin access-request intent");
+    let access_receipt = create_access_request_notification_in_tx(
+        &mut access_tx,
+        &access_request,
+        now,
+        &TestSnapshotProtector,
+    )
+    .await
+    .expect("create access-request intent");
+    access_tx
+        .commit()
+        .await
+        .expect("commit access-request intent");
+    assert!(!access_receipt.idempotent_replay);
+
+    let restarted_pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .expect("restart Notification connection for access-request replay");
+    let mut access_replay_tx = restarted_pool
+        .begin()
+        .await
+        .expect("begin restarted access-request replay");
+    let access_replay = create_access_request_notification_in_tx(
+        &mut access_replay_tx,
+        &access_request,
+        now,
+        &TestSnapshotProtector,
+    )
+    .await
+    .expect("replay access-request intent after restart");
+    access_replay_tx
+        .commit()
+        .await
+        .expect("commit restarted access-request replay");
+    assert!(access_replay.idempotent_replay);
+    assert_eq!(access_replay.intent_id, access_receipt.intent_id);
+
+    let mut changed_access_request = access_request.clone();
+    changed_access_request.template.role.display_name = Some("Owner".to_owned());
+    let mut access_conflict_tx = restarted_pool
+        .begin()
+        .await
+        .expect("begin access-request conflict");
+    let access_conflict = create_access_request_notification_in_tx(
+        &mut access_conflict_tx,
+        &changed_access_request,
+        now,
+        &TestSnapshotProtector,
+    )
+    .await
+    .expect_err("same request/event with changed display input must conflict");
+    assert_eq!(access_conflict.code, ErrorCode::Conflict);
+    access_conflict_tx
+        .rollback()
+        .await
+        .expect("rollback access-request conflict");
+
+    let approved = access_request_notification(now, AccessRequestNotificationEvent::Approved);
+    let mut approved_tx = restarted_pool
+        .begin()
+        .await
+        .expect("begin approved access-request intent");
+    let approved_receipt = create_access_request_notification_in_tx(
+        &mut approved_tx,
+        &approved,
+        now,
+        &TestSnapshotProtector,
+    )
+    .await
+    .expect("create distinct approved access-request intent");
+    approved_tx
+        .commit()
+        .await
+        .expect("commit approved access-request intent");
+    assert_ne!(approved_receipt.intent_id, access_receipt.intent_id);
+    let access_purposes: i64 = sqlx::query_scalar(
+        "select count(*) from notification.intents where purpose='transactional.access_request' and source_entity_id='ar_notification_1'",
+    )
+    .fetch_one(&restarted_pool)
+    .await
+    .expect("count durable access-request intents");
+    assert_eq!(access_purposes, 2);
+    let templates: Vec<String> = sqlx::query_scalar(
+        "select template_id from notification.template_releases where template_id like 'access-request-%' order by template_id",
+    )
+    .fetch_all(&restarted_pool)
+    .await
+    .expect("read access-request template releases");
+    assert_eq!(
+        templates,
+        vec![
+            "access-request-approved".to_owned(),
+            "access-request-submitted".to_owned(),
+        ]
+    );
+    restarted_pool.close().await;
 
     truncate_notification_ledger(&pool).await;
     let request = invitation_request(now, "primary");
@@ -1213,5 +1317,48 @@ fn invitation_request(now: chrono::DateTime<Utc>, suffix: &str) -> CreateTransac
         correlation_id: format!("corr_notification_{suffix}"),
         causation_id: Some(format!("obs_invitation_{suffix}")),
         requested_by: Some("usr_test".to_owned()),
+    }
+}
+
+fn access_request_notification(
+    now: chrono::DateTime<Utc>,
+    event: AccessRequestNotificationEvent,
+) -> CreateAccessRequestNotificationIntent {
+    let event_name = match event {
+        AccessRequestNotificationEvent::Submitted => "submitted",
+        AccessRequestNotificationEvent::Approved => "approved",
+        AccessRequestNotificationEvent::Denied => "denied",
+        AccessRequestNotificationEvent::Expiring => "expiring",
+    };
+    CreateAccessRequestNotificationIntent {
+        source: IntentSource {
+            module_id: "access-requests".to_owned(),
+            entity_type: "access_request".to_owned(),
+            entity_id: "ar_notification_1".to_owned(),
+        },
+        recipient: EmailRecipient {
+            address: "requester@example.com".to_owned(),
+            display_name: Some("Requester".to_owned()),
+            locale: "en".to_owned(),
+        },
+        template: AccessRequestNotificationTemplateV1 {
+            request_id: "ar_notification_1".to_owned(),
+            organization_id: "org_test".to_owned(),
+            event,
+            role: AccessRequestRoleV1 {
+                role_id: "role_member".to_owned(),
+                display_name: Some("Member".to_owned()),
+            },
+            scope: AccessRequestScopeV1 {
+                kind: "organization".to_owned(),
+                id: "org_test".to_owned(),
+                display_name: Some("Test Organization".to_owned()),
+            },
+            expires_at: Some(now + Duration::days(1)),
+        },
+        idempotency_key: format!("access-request:ar_notification_1:{event_name}"),
+        correlation_id: "corr_access_request_notification_1".to_owned(),
+        causation_id: Some(format!("access_request_notification_1:{event_name}")),
+        requested_by: Some("usr_requester".to_owned()),
     }
 }

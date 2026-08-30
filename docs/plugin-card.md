@@ -2,9 +2,10 @@
 
 ## Owner and deletion boundary
 
-`lenso.notification` owns transactional invitation intent, immutable protected
-render snapshots, delivery state, append-only attempts, authoritative receipts,
-source lifecycle observations, and retry decisions. Removing the Plugin from
+`lenso.notification` owns transactional invitation and access-request lifecycle
+intent, immutable protected render snapshots, delivery state, append-only
+attempts, authoritative receipts, source lifecycle observations, and retry
+decisions. Removing the Plugin from
 App Composition removes all three provided Capability endpoints and stops new
 dispatch work. It requires no Kernel branch and does not delete the existing
 PostgreSQL schema or evidence rows; data retention or erasure is a separate,
@@ -20,7 +21,8 @@ to name a source Plugin or receipt Provider.
 - Plugin ID: `lenso.notification`; root Slot: `notifications`.
 - Provided request Capabilities: `lenso.notification.transactional@1`,
   `lenso.notification.delivery@1`, and `lenso.notification.admin@1`, all at
-  descriptor `1.0.0`, portable, and cross-lane transferable.
+  descriptor `1.1.0` for Transactional and `1.0.0` for Delivery/Admin,
+  portable, and cross-lane transferable.
 - Required Capabilities: exactly one `lenso.secrets@1` Provider and exactly one
   `lenso.email-dispatch@1` Provider.
 - Implementation: linked native Rust with a Plugin-owned PostgreSQL schema and
@@ -50,6 +52,14 @@ an external effect.
 Source invitation observations cover `accepted`, `revoked`, and `expired`.
 They are caller-scoped and idempotent and terminalize only queued or
 retry-scheduled work that existed before the observation.
+
+`create_access_request_notification` accepts only submitted, approved, denied,
+or expiring events and fixed bounded role/scope display data. It exposes no
+arbitrary template/HTML and accepts no access reason or approval note. Rendering
+is deterministic and HTML-escaped. The request/event-derived idempotency key is
+mandatory: exact replay returns the existing intent, while any changed input
+conflicts. Acceptance means the durable delivery ledger contains the intent;
+it is not evidence that email was delivered.
 
 Durable cadence is not hidden inside Kernel Event fanout or a generic worker.
 An App selects a Jobs/Scheduler/Workflow owner that explicitly calls

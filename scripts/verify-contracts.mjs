@@ -11,22 +11,30 @@ const contracts = [
   {
     directory: "lenso-capability-email-dispatch",
     id: "lenso.email-dispatch@1",
+    version: "1.0.0",
     operations: ["dispatch"],
   },
   {
     directory: "lenso-capability-notification-admin",
     id: "lenso.notification.admin@1",
+    version: "1.0.0",
     operations: ["list_deliveries", "get_delivery", "retry_delivery"],
   },
   {
     directory: "lenso-capability-notification-delivery",
     id: "lenso.notification.delivery@1",
+    version: "1.0.0",
     operations: ["dispatch_due", "observe_receipt"],
   },
   {
     directory: "lenso-capability-notification-transactional",
     id: "lenso.notification.transactional@1",
-    operations: ["create_organization_invitation", "observe_invitation_lifecycle"],
+    version: "1.1.0",
+    operations: [
+      "create_organization_invitation",
+      "observe_invitation_lifecycle",
+      "create_access_request_notification",
+    ],
   },
 ];
 
@@ -62,7 +70,7 @@ for (const contract of contracts) {
   const descriptor = JSON.parse(
     await readFile(resolve(directory, "capability.json"), "utf8"),
   );
-  if (descriptor.id !== contract.id || descriptor.version !== "1.0.0") {
+  if (descriptor.id !== contract.id || descriptor.version !== contract.version) {
     throw new Error(`${contract.id} identity drift`);
   }
   if (descriptor.portable !== true || descriptor.cross_lane_transfer !== true) {
@@ -119,6 +127,26 @@ const transactionalRequest = JSON.parse(
 );
 if ("plugin_id" in transactionalRequest.properties.source.properties) {
   throw new Error("transactional caller identity must not be accepted from payload");
+}
+const accessRequestNotification = JSON.parse(
+  await readFile(
+    resolve(
+      root,
+      "crates/lenso-capability-notification-transactional/schemas/create-access-request-notification-request.schema.json",
+    ),
+    "utf8",
+  ),
+);
+for (const forbidden of ["html", "subject", "template", "reason", "approval_note"]) {
+  if (forbidden in accessRequestNotification.properties) {
+    throw new Error(`access-request Notification must not expose ${forbidden}`);
+  }
+}
+if (
+  JSON.stringify(accessRequestNotification.properties.event.enum) !==
+  JSON.stringify(["submitted", "approved", "denied", "expiring"])
+) {
+  throw new Error("access-request Notification lifecycle drift");
 }
 const receiptRequest = JSON.parse(
   await readFile(

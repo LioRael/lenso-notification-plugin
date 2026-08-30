@@ -53,4 +53,4 @@ jobs:
       - name: Check Console Surface and contracts
         run: pnpm check
       - name: Verify Plugin and Capability packages
-        run: cargo package --locked --workspace
+        run: ./scripts/check-public-packages.sh
