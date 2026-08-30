@@ -1742,7 +1742,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_and_authoritative_receipt_authorities_are_disjoint_per_operation() {
+    fn observation_authorities_are_disjoint_per_operation() {
         let plugin = unprepared_plugin();
         assert!(matches!(
             futures::executor::block_on(plugin.dispatch_due(
@@ -1770,6 +1770,23 @@ mod tests {
             ),
             Err(PluginError::Domain(
                 delivery::ObserveReceiptError::Unauthorized
+            ))
+        ));
+
+        let lifecycle = transactional::ObserveInvitationLifecycleRequest {
+            invitation_id: "invite".to_owned(),
+            lifecycle: transactional::ObserveInvitationLifecycleRequestLifecycle::Revoked,
+            observation_id: "observation".to_owned(),
+            observed_at: "2026-08-30T00:00:00Z".to_owned(),
+            organization_id: "organization".to_owned(),
+        };
+        assert!(matches!(
+            futures::executor::block_on(plugin.observe_invitation_lifecycle(
+                caller_context("notification-worker-blue"),
+                lifecycle,
+            )),
+            Err(PluginError::Domain(
+                transactional::ObserveInvitationLifecycleError::Unauthorized
             ))
         ));
     }

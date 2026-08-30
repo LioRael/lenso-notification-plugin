@@ -42,20 +42,17 @@ impl NotificationEventApplier {
         expected_event_name: &str,
         event: &ObservationEnvelope,
     ) -> NotificationResult<()> {
-        if event.event_name != expected_event_name || event.event_version != 1 {
-            return Err(NotificationError::new(
-                ErrorCode::Validation,
-                "Notification received an undeclared Event contract",
-            ));
-        }
+        validate_event_contract(expected_event_name, event)?;
         match expected_event_name {
             EMAIL_DISPATCH_OBSERVED_EVENT => {
                 let payload: EmailDispatchObserved = decode_payload(event)?;
+                validate_event_source(event, &payload.provider)?;
                 validate_dispatch_observation(&payload)?;
                 apply_dispatch_observation(&self.db, event, &payload).await
             }
             EMAIL_RECEIPT_OBSERVED_EVENT => {
                 let payload: EmailReceiptObserved = decode_payload(event)?;
+                validate_event_source(event, &payload.source)?;
                 validate_receipt(&payload)?;
                 apply_receipt(&self.db, event, &payload).await
             }
@@ -71,6 +68,36 @@ impl NotificationEventApplier {
             )),
         }
     }
+}
+
+fn validate_event_contract(
+    expected_event_name: &str,
+    event: &ObservationEnvelope,
+) -> NotificationResult<()> {
+    if event.event_name != expected_event_name
+        || event.event_version != 1
+        || event.source_module.trim().is_empty()
+        || event.source_module.chars().count() > 160
+    {
+        return Err(NotificationError::new(
+            ErrorCode::Validation,
+            "Notification received an undeclared Event contract",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_event_source(
+    event: &ObservationEnvelope,
+    expected_source_module: &str,
+) -> NotificationResult<()> {
+    if event.source_module != expected_source_module {
+        return Err(NotificationError::new(
+            ErrorCode::Validation,
+            "Notification Event source does not match its authorized producer",
+        ));
+    }
+    Ok(())
 }
 
 async fn apply_dispatch_observation(
@@ -949,6 +976,64 @@ fn map_sql_error(error: sqlx::Error) -> NotificationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn forged_observation_sources_fail_before_storage() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://notification:notification@127.0.0.1/notification")
+            .expect("construct lazy pool");
+        let applier = NotificationEventApplier::new(pool);
+        let observed_at = chrono::Utc::now();
+        let dispatch = EmailDispatchObserved {
+            delivery_id: "ntf_dlv_1".to_owned(),
+            attempt_id: "ntf_att_1".to_owned(),
+            function_run_id: "ntf_run_1".to_owned(),
+            outcome: DispatchOutcome::Accepted,
+            provider: "email-provider-blue".to_owned(),
+            observed_at,
+            remote_receipt: None,
+            failure: None,
+        };
+        let forged_dispatch = ObservationEnvelope {
+            id: "obs_dispatch_forged".to_owned(),
+            event_name: EMAIL_DISPATCH_OBSERVED_EVENT.to_owned(),
+            event_version: 1,
+            source_module: "email-provider-red".to_owned(),
+            aggregate_id: dispatch.delivery_id.clone(),
+            occurred_at: observed_at,
+            payload: serde_json::to_value(dispatch).expect("encode dispatch observation"),
+        };
+        let error = applier
+            .apply(&forged_dispatch)
+            .await
+            .expect_err("dispatch source must match the selected provider");
+        assert_eq!(error.code, ErrorCode::Validation);
+
+        let receipt = EmailReceiptObserved {
+            delivery_id: "ntf_dlv_1".to_owned(),
+            attempt_id: "ntf_att_1".to_owned(),
+            function_run_id: "ntf_run_1".to_owned(),
+            kind: ReceiptKind::Delivered,
+            source: "email-provider-blue".to_owned(),
+            observed_at,
+            remote_id: "remote-1".to_owned(),
+            digest: format!("sha256:{}", "a".repeat(64)),
+        };
+        let forged_receipt = ObservationEnvelope {
+            id: "obs_receipt_forged".to_owned(),
+            event_name: EMAIL_RECEIPT_OBSERVED_EVENT.to_owned(),
+            event_version: 1,
+            source_module: "email-provider-red".to_owned(),
+            aggregate_id: receipt.delivery_id.clone(),
+            occurred_at: observed_at,
+            payload: serde_json::to_value(receipt).expect("encode receipt observation"),
+        };
+        let error = applier
+            .apply(&forged_receipt)
+            .await
+            .expect_err("receipt source must match the authorized caller");
+        assert_eq!(error.code, ErrorCode::Validation);
+    }
 
     #[test]
     fn validation_distinguishes_accepted_from_delivery() {
