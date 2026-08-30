@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    { "const": "unauthorized" },
+    { "const": "invalid_request" },
+    { "const": "delivery_not_found" },
+    { "const": "stale_revision" },
+    { "const": "retry_not_allowed" },
+    { "const": "idempotency_conflict" }
+  ]
+}

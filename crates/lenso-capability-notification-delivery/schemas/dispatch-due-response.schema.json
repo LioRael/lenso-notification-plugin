@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["delivery_id", "attempt_id", "run_id", "status", "observed_at", "next_attempt_at"],
+  "properties": {
+    "delivery_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "attempt_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "run_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "status": { "type": "string", "enum": ["accepted", "retry_scheduled", "failed", "delivery_unknown"] },
+    "observed_at": { "type": "string", "format": "date-time", "minLength": 1, "maxLength": 64 },
+    "next_attempt_at": { "type": ["string", "null"], "format": "date-time", "minLength": 1, "maxLength": 64 }
+  }
+}

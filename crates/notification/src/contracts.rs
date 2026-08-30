@@ -1,56 +1,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub const EMAIL_DISPATCH_REQUESTED_EVENT: &str = "lenso.email.dispatch-requested.v1";
 pub const EMAIL_DISPATCH_OBSERVED_EVENT: &str = "lenso.email.dispatch-observed.v1";
 pub const EMAIL_RECEIPT_OBSERVED_EVENT: &str = "lenso.email.receipt-observed.v1";
-pub const RUNTIME_FUNCTION_TERMINAL_EVENT: &str = "lenso.runtime-function-terminal.v1";
 pub const ORGANIZATION_INVITATION_ACCEPTED_EVENT: &str =
     "lenso.organization.invitation-accepted.v1";
+pub const ORGANIZATION_INVITATION_EXPIRED_EVENT: &str = "lenso.organization.invitation-expired.v1";
 pub const ORGANIZATION_INVITATION_REVOKED_EVENT: &str = "lenso.organization.invitation-revoked.v1";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EmailDispatchRequested {
-    pub delivery_id: String,
-    pub attempt_id: String,
-    pub function_run_id: String,
-    pub idempotency_key: String,
-    pub channel: EmailChannel,
-    pub recipient: DispatchRecipient,
-    pub message: DispatchMessage,
-    pub context: DispatchContext,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EmailChannel {
-    Email,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DispatchRecipient {
-    pub address: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DispatchMessage {
-    pub template_id: String,
-    pub template_version: String,
-    pub locale: String,
-    pub subject: String,
-    pub text: String,
-    pub html: String,
-    pub content_digest: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DispatchContext {
-    pub correlation_id: String,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,20 +69,9 @@ pub struct EmailReceiptObserved {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeFunctionTerminal {
-    pub failure_classification: String,
-    pub failure_code: String,
-    pub function_name: String,
-    pub function_run_id: String,
-    pub owner_module: String,
-    pub terminal_state: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OrganizationInvitationLifecycle {
     pub invitation_id: String,
     pub organization_id: String,
-    #[serde(alias = "acceptedAt", alias = "revokedAt")]
+    #[serde(alias = "acceptedAt", alias = "expiredAt", alias = "revokedAt")]
     pub observed_at: DateTime<Utc>,
 }

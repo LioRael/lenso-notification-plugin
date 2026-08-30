@@ -1,0 +1,22 @@
+{
+  "id": "lenso.notification.delivery@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "dispatch_due",
+      "interaction": "request",
+      "request_schema": "schemas/dispatch-due-request.schema.json",
+      "response_schema": "schemas/dispatch-due-response.schema.json",
+      "domain_error_schema": "schemas/dispatch-due-error.schema.json"
+    },
+    {
+      "name": "observe_receipt",
+      "interaction": "request",
+      "request_schema": "schemas/observe-receipt-request.schema.json",
+      "response_schema": "schemas/observe-receipt-response.schema.json",
+      "domain_error_schema": "schemas/observe-receipt-error.schema.json"
+    }
+  ]
+}

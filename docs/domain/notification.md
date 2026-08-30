@@ -1,45 +1,87 @@
 # Notification domain
 
-Notification owns the business ledger for one transactional email lifecycle.
-It does not own SMTP credentials, provider accounts, raw transcripts, Host
-Runtime records, SMS, Push, campaigns, or template editing.
+Notification owns one durable business ledger for transactional email intent,
+immutable rendering, delivery attempts, receipts, retry decisions, and final
+status. It does not own SMTP credentials, provider accounts, raw provider
+transcripts, Kernel execution records, SMS, push, campaigns, or template
+editing.
 
 ## First workflow
 
-1. Organization creates an invitation and calls
-   `notification::public::create_transactional_email_intent_in_tx` using the
-   same caller-owned `LinkedTransaction`.
-   The integration identity is the actual linked Module manifest name
-   `organization` (not the canonical release id `lenso/organization`).
-2. Notification pins `organization-invitation@v1`, protects recipient and
-   rendered subject/text/HTML, and creates one queued delivery.
-3. `notification.dispatch-due.v1` atomically appends a business attempt and
-   publishes `lenso.email.dispatch-requested.v1` through the Host Outbox.
-4. Email Provider Service records the transport effect and emits a known
-   dispatch outcome. SMTP `250` is `accepted`, never `delivered`.
-5. Authoritative provider receipt evidence is the only path to `delivered`.
-   Ambiguous effects become `delivery_unknown` and are closed to automatic and
-   manual retry.
+1. An authorized business Plugin calls
+   `lenso.notification.transactional@1/create_organization_invitation`. The
+   caller Instance, not a payload field, becomes the source identity and
+   idempotency scope.
+2. Notification renders and pins `organization-invitation@v1`, protects the
+   recipient and subject/text/HTML, and commits one queued delivery in its own
+   transaction.
+3. An authorized worker calls `lenso.notification.delivery@1/dispatch_due`.
+   Notification atomically appends one immutable attempt before invoking the
+   exact bound `lenso.email-dispatch@1` Provider.
+4. A known temporary outcome schedules a new business attempt. A known
+   permanent rejection closes the delivery. An ambiguous Runtime or protocol
+   result becomes `delivery_unknown`.
+5. Provider acceptance remains `accepted`; only an authorized receipt call
+   derived from the caller Provider Instance can produce `delivered`.
 
-## Identities and retry
+Invitation sources may observe `accepted`, `revoked`, or `expired`. Each state
+terminalizes only queued or retry-scheduled delivery work that predates the
+observation; source identity remains caller-derived and the observation is
+idempotent.
 
-- One intent key plus one request digest is a business idempotency claim.
-- One Notification attempt has one stable `function_run_id`.
-- Provider invocation sub-attempts remain Host/Provider technical evidence.
-- A known temporary result closes the current attempt and schedules a new
-  Notification attempt. It is not hidden as a Host technical retry.
-- Attempts, receipts, and retry decisions are append-only.
+The generated request Capability is used because durable success and
+Domain/Runtime failure classification matter. Kernel Event fanout is volatile
+and is not a delivery ledger, scheduler, or substitute for these transactions.
+Historical-looking observation names retained inside the private ledger are
+idempotency/evidence labels only; they are not published Kernel Event Contracts
+or an active transport surface.
 
-## Sensitive content boundary
+Email Dispatch Domain errors (`invalid_dispatch` and `unsupported_message`) are
+valid only before the Provider starts an external effect. After that boundary,
+an uncertain Provider result is response `delivery_unknown` or Runtime failure.
+Notification rejects inconsistent native response shapes and terminalizes them
+as `delivery_unknown`; it never converts an invalid retry delay into a retry.
 
-`notification.intents.recipient_ciphertext` and the three ciphertext columns
-in `notification.render_snapshots` use authenticated application-layer
-envelopes. Production fails closed without a 32-byte base64 secret supplied as
-`LENSO_NOTIFICATION_SNAPSHOT_KEY`; the Manifest declares the corresponding
-secret reference. The Console queries never select these columns. They expose
-only a recipient mask, independently rendered redacted preview, and digest.
+## Idempotency and retry
 
-The dispatch Outbox payload necessarily contains delivery plaintext while it
-crosses the Provider boundary. It is marked `log_payload=false`; Host and Email
-Service must apply restricted access and short retention. Credentials and raw
-provider transcripts never enter Notification Events.
+- One caller Instance plus one intent idempotency key and request digest is the
+  business idempotency claim.
+- One Notification attempt has one stable run ID and one provider idempotency
+  key.
+- Known temporary outcomes close the current attempt before scheduling another.
+- Attempts, receipts, source observations, and retry decisions are append-only.
+- `delivery_unknown` is terminal and closed to automatic and manual retry.
+- Manual retry requires a current delivery revision and a separate idempotency
+  key; it never edits or deletes prior evidence.
+
+## Sensitive content
+
+Recipient and rendered message columns use authenticated application-layer
+envelopes. Production preparation fails closed unless the configured Secret
+resolves to exactly 32 base64-decoded bytes. Generated email-dispatch request
+types redact recipient and body fields from `Debug` output.
+
+Admin Capability queries never select ciphertext. They expose only a recipient
+mask, independently rendered redacted preview, content digest, statuses, and
+append-only evidence metadata. Credentials and raw provider transcripts never
+enter Notification state.
+
+## Operator and adapter boundaries
+
+The Plugin owns the fixed `notification` schema. `prepare` validates the exact
+operator-managed migration ledger and complete managed catalog fingerprint;
+setup, upgrade, and one-time exact legacy
+adoption are explicit `NotificationOperator` actions. Adoption requires a
+maintenance window because it locks the legacy Host ledger and all nine legacy
+Notification tables while it proves provenance and exact catalog shape. Those
+locks do not serialize arbitrary schema-local `CREATE` statements, so all DDL
+actors must also be stopped; a later `prepare` rejects any slipped or post-
+adoption catalog object.
+Historical migration SQL is immutable. Adoption records v1, then the explicit
+operator upgrade applies later forward-only migrations before runtime prepare.
+
+The retained Console source is not a reachable Surface. A future independent
+Adapter must require `lenso.notification.admin@1` and publish
+`lenso.http.endpoint@1` after `lenso-web` aligns to this repository's Lenso
+dependency baseline. It must not access Notification tables or restore Host
+HTTP/admin hooks.

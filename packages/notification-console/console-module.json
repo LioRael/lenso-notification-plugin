@@ -1,6 +1,6 @@
 {
   "protocol": "lenso.console-module.v1",
-  "moduleId": "lenso/notification",
+  "moduleId": "lenso.notification",
   "hostApi": "^2.1.0",
   "consoleUi": "^2.0.0",
   "surfaces": [

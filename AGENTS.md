@@ -1,10 +1,10 @@
 # Agent instructions
 
 Before planning, changing, or executing a release, read this repository's
-`.github/workflows/release-plz.yml`. Do not infer production authority from
-repository write access. Registry publication, immutable tags, and GitHub
-Releases require the repository's Trusted Publisher workflow and explicit
-approval.
+`docs/release-process.md` and `.github/workflows/release-plz.yml`. Do not infer
+production authority from repository write access. Registry publication,
+immutable tags, and GitHub Releases require the repository's Trusted Publisher
+workflow and explicit approval.
 
 Notification is a linked Lenso Module. Keep business state, retry policy, and
 the operator Surface in this repository. Email transport credentials and

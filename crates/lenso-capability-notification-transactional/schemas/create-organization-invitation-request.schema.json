@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source", "recipient", "template", "idempotency_key", "correlation_id", "causation_id", "requested_by"],
+  "properties": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type", "entity_id"],
+      "properties": {
+        "entity_type": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "entity_id": { "type": "string", "minLength": 1, "maxLength": 240 }
+      }
+    },
+    "recipient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "display_name", "locale"],
+      "properties": {
+        "address": { "type": "string", "minLength": 3, "maxLength": 320, "x-lenso-sensitive": true },
+        "display_name": { "type": ["string", "null"], "maxLength": 240, "x-lenso-sensitive": true },
+        "locale": { "type": "string", "enum": ["en", "en-US"] }
+      }
+    },
+    "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["organization_id", "organization_name", "invitation_id", "invitation_url", "inviter_display_name", "role_name", "expires_at"],
+      "properties": {
+        "organization_id": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "organization_name": { "type": "string", "minLength": 1, "maxLength": 240, "x-lenso-sensitive": true },
+        "invitation_id": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "invitation_url": { "type": "string", "minLength": 1, "maxLength": 4096, "x-lenso-sensitive": true },
+        "inviter_display_name": { "type": ["string", "null"], "maxLength": 240, "x-lenso-sensitive": true },
+        "role_name": { "type": ["string", "null"], "maxLength": 160 },
+        "expires_at": { "type": "string", "format": "date-time", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "correlation_id": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "causation_id": { "type": ["string", "null"], "maxLength": 240 },
+    "requested_by": { "type": ["string", "null"], "maxLength": 240 }
+  }
+}
