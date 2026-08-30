@@ -43,7 +43,7 @@ second caller-selected source field.
 
 ## Verification
 
-- `/Users/leosouthey/Projects/framework/.lenso-tools/bin/lenso-cargo test --locked -p lenso-notification-plugin` -> all pass.
+- `lenso-cargo test --locked -p lenso-notification-plugin` -> all pass.
 - `pnpm check` -> exit 0.
 - `git diff --check` -> no output.
 

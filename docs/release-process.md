@@ -32,8 +32,16 @@ Before first publication of each new crate name:
    crate; and
 5. run the live workflow only after every crate has its matching publisher.
 
+`lenso-notification-plugin` additionally depends on
+`lenso-capability-notification-template` version `0.1.0`, with development
+source locked to Template repository commit
+`c07d56a5caecd173916ea3fa5b094f78e1d00648`. Publish that Capability version
+before publishing this implementation crate; Cargo's normalized public manifest
+resolves the version from crates.io and does not retain the Git source.
+
 `scripts/check-public-packages.sh` packages each Capability, creates the Plugin
-archive with exact source patches for coordinated unpublished changes, then
+archive with exact source patches for coordinated unpublished changes, including
+the lock-resolved Template Capability source, then
 extracts the normalized archives and runs check/test/clippy against those bytes.
 It prevents a workspace path dependency from being silently replaced by an
 older registry Capability during package verification.

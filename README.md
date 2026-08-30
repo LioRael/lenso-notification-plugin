@@ -17,6 +17,8 @@ implementation:
   delivery receipts.
 - `lenso.notification.admin@1` reads the redacted ledger and requests an
   explicit manual retry.
+- `lenso.notification-template@1` is the required external immutable-template
+  and safe-rendering role.
 - `lenso.email-dispatch@1` is the required external email-effect role.
 - `lenso-notification-plugin` provides the three Notification roles as Plugin
   `lenso.notification` in root Slot `notifications`.
@@ -43,11 +45,21 @@ work for that source invitation.
 Access-request notification input contains only a request/Organization id,
 recipient, event, bounded role/scope display fields, optional expiry, and
 correlation metadata. There is no arbitrary subject, HTML, template, reason,
-or approval-note field. Notification renders deterministic plaintext and
-HTML-escapes every interpolated value. The exact key
+or approval-note field. Notification requests the exact built-in `v1` release
+from its bound `lenso.notification-template@1` Provider, validates the returned
+identity and content digest, and persists that immutable render as its protected
+delivery snapshot. The exact key
 `access-request:<request_id>:<event>` is required, so the same caller and
 request/event pair deduplicates while changed input conflicts. A successful
 call means only that durable intent was accepted; it never claims delivery.
+
+Exact idempotent replays are read from the Notification ledger before a render
+call, so an already accepted intent remains replayable if the Template Provider
+is temporarily unavailable. New intent creation fails without any Notification
+write when rendering fails. In App Composition, bind exactly one Template
+Provider and include the Notification Plugin's selected Instance key in that
+Provider's `render_callers`; this is a service-to-service authority, not a
+forwarded business caller identity.
 
 Schema lifecycle is operator-owned:
 
@@ -96,8 +108,9 @@ dependency until they select this Plugin and call generated Capability Clients.
 
 The existing `lenso-email-provider-service` is also on the legacy lane. A
 deployable composition requires an email Plugin that implements
-`lenso.email-dispatch@1`; repository test Providers prove the generated
-boundary but are not production implementations.
+`lenso.email-dispatch@1` and a Template Plugin that implements
+`lenso.notification-template@1`; repository test Providers prove generated
+boundaries but are not production implementations.
 
 That email contract treats `invalid_dispatch` and `unsupported_message` as
 pre-effect Domain rejections only. Once an external effect starts, the Provider

@@ -835,6 +835,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-capability-notification-template"
+version = "0.1.0"
+source = "git+https://github.com/LioRael/lenso-notification-template-plugin?rev=c07d56a5caecd173916ea3fa5b094f78e1d00648#c07d56a5caecd173916ea3fa5b094f78e1d00648"
+dependencies = [
+ "futures",
+ "lenso-contract-codegen",
+ "lenso-contract-runtime",
+ "lenso-kernel",
+ "lenso-plugin-authoring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lenso-capability-notification-transactional"
 version = "0.1.0"
 dependencies = [
@@ -952,6 +966,7 @@ dependencies = [
  "lenso-capability-email-dispatch",
  "lenso-capability-notification-admin",
  "lenso-capability-notification-delivery",
+ "lenso-capability-notification-template",
  "lenso-capability-notification-transactional",
  "lenso-capability-secrets",
  "lenso-kernel",

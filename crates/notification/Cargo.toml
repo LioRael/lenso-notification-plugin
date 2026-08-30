@@ -31,6 +31,7 @@ lenso-capability-email-dispatch = { version = "0.1.0", path = "../lenso-capabili
 lenso-capability-notification-admin = { version = "0.1.0", path = "../lenso-capability-notification-admin" }
 lenso-capability-notification-delivery = { version = "0.1.0", path = "../lenso-capability-notification-delivery" }
 lenso-capability-notification-transactional = { version = "0.1.0", path = "../lenso-capability-notification-transactional" }
+lenso-capability-notification-template.workspace = true
 lenso-capability-secrets.workspace = true
 lenso-postgres-kit.workspace = true
 regex.workspace = true

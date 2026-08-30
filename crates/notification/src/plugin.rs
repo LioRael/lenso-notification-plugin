@@ -8,6 +8,7 @@ use lenso_capability_email_dispatch::{
 };
 use lenso_capability_notification_admin as admin;
 use lenso_capability_notification_delivery as delivery;
+use lenso_capability_notification_template as notification_template;
 use lenso_capability_notification_transactional as transactional;
 use lenso_capability_secrets::{ResolveRequest, SecretsInvocationError};
 use lenso_postgres_kit::OwnedPostgres;
@@ -29,8 +30,10 @@ use crate::operator::verify_managed_catalog;
 use crate::public::{
     AccessRequestNotificationEvent, AccessRequestNotificationTemplateV1, AccessRequestRoleV1,
     AccessRequestScopeV1, CreateAccessRequestNotificationIntent, CreateTransactionalEmailIntent,
-    EmailRecipient, IntentSource, OrganizationInvitationTemplateV1,
-    create_access_request_notification_in_tx, create_transactional_email_intent_in_tx,
+    EmailRecipient, IntentSource, OrganizationInvitationTemplateV1, RenderedTemplate,
+    access_request_template_id, create_access_request_notification_in_tx,
+    create_transactional_email_intent_in_tx, find_access_request_notification_replay,
+    find_transactional_email_intent_replay,
 };
 use crate::repository::{
     ADMIN_ATTEMPT_LIMIT, ADMIN_RECEIPT_LIMIT, ADMIN_RETRY_REQUEST_LIMIT, AttemptRecord,
@@ -135,6 +138,7 @@ struct NotificationPlugin {
     config: NotificationConfig,
     secrets: Port<lenso_capability_secrets::SecretsClient>,
     email: Port<email::EmailDispatchClient>,
+    templates: Port<notification_template::NotificationTemplateClient>,
     state: Rc<RefCell<Option<PreparedNotification>>>,
 }
 
@@ -223,6 +227,22 @@ impl NotificationPlugin {
             requested_by: request.requested_by,
         };
         let prepared = self.prepared().map_err(PluginError::runtime)?;
+        if let Some(receipt) =
+            find_transactional_email_intent_replay(prepared.postgres.pool(), &intent, now)
+                .await
+                .map_err(map_create_error)?
+        {
+            return Ok(transactional::CreateOrganizationInvitationResponse {
+                delivery_id: receipt.delivery_id,
+                idempotent_replay: true,
+                intent_id: receipt.intent_id,
+                status: transactional::CreateOrganizationInvitationResponseStatus::Queued,
+            });
+        }
+        let rendered = self
+            .render_organization_invitation(context, &intent)
+            .await
+            .map_err(PluginError::runtime)?;
         let mut transaction = prepared
             .postgres
             .pool()
@@ -232,6 +252,7 @@ impl NotificationPlugin {
         let receipt = create_transactional_email_intent_in_tx(
             &mut transaction,
             &intent,
+            &rendered,
             now,
             &prepared.protector,
         )
@@ -330,6 +351,22 @@ impl NotificationPlugin {
             requested_by: request.requested_by,
         };
         let prepared = self.prepared().map_err(PluginError::runtime)?;
+        if let Some(receipt) =
+            find_access_request_notification_replay(prepared.postgres.pool(), &intent, now)
+                .await
+                .map_err(map_access_request_create_error)?
+        {
+            return Ok(transactional::CreateAccessRequestNotificationResponse {
+                delivery_id: receipt.delivery_id,
+                idempotent_replay: true,
+                intent_id: receipt.intent_id,
+                status: transactional::CreateAccessRequestNotificationResponseStatus::Queued,
+            });
+        }
+        let rendered = self
+            .render_access_request_notification(context, &intent)
+            .await
+            .map_err(PluginError::runtime)?;
         let mut transaction = prepared
             .postgres
             .pool()
@@ -339,6 +376,7 @@ impl NotificationPlugin {
         let receipt = create_access_request_notification_in_tx(
             &mut transaction,
             &intent,
+            &rendered,
             now,
             &prepared.protector,
         )
@@ -677,6 +715,181 @@ impl NotificationPlugin {
             .ok_or_else(|| RuntimeFailure::PluginFailure {
                 detail: "Notification Plugin is not prepared".to_owned(),
             })
+    }
+
+    async fn render_organization_invitation(
+        &self,
+        context: Ctx,
+        intent: &CreateTransactionalEmailIntent,
+    ) -> Result<RenderedTemplate, RuntimeFailure> {
+        self.templates
+            .render_with_context(context, organization_invitation_render_request(intent))
+            .await
+            .map(rendered_template)
+            .map_err(map_template_render_error)
+    }
+
+    async fn render_access_request_notification(
+        &self,
+        context: Ctx,
+        intent: &CreateAccessRequestNotificationIntent,
+    ) -> Result<RenderedTemplate, RuntimeFailure> {
+        self.templates
+            .render_with_context(context, access_request_render_request(intent))
+            .await
+            .map(rendered_template)
+            .map_err(map_template_render_error)
+    }
+}
+
+fn organization_invitation_render_request(
+    intent: &CreateTransactionalEmailIntent,
+) -> notification_template::RenderRequest {
+    notification_template::RenderRequest {
+        template_id: crate::public::ORGANIZATION_INVITATION_TEMPLATE_ID.to_owned(),
+        version: Some(crate::public::ORGANIZATION_INVITATION_TEMPLATE_VERSION.to_owned()),
+        locale: intent.recipient.locale.clone(),
+        variables: render_variables([
+            (
+                "expires_at",
+                format_template_time(intent.template.expires_at),
+            ),
+            ("invitation_url", intent.template.invitation_url.clone()),
+            (
+                "inviter_display_name",
+                trimmed_optional(intent.template.inviter_display_name.as_deref()),
+            ),
+            ("locale", intent.recipient.locale.clone()),
+            (
+                "organization_name",
+                intent.template.organization_name.trim().to_owned(),
+            ),
+            (
+                "recipient_display_name",
+                trimmed_optional(intent.recipient.display_name.as_deref()),
+            ),
+            (
+                "role_name",
+                trimmed_optional(intent.template.role_name.as_deref()),
+            ),
+        ]),
+    }
+}
+
+fn access_request_render_request(
+    intent: &CreateAccessRequestNotificationIntent,
+) -> notification_template::RenderRequest {
+    let role = intent
+        .template
+        .role
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&intent.template.role.role_id)
+        .to_owned();
+    let scope = intent
+        .template
+        .scope
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&intent.template.scope.id)
+        .to_owned();
+    let mut variables = vec![
+        render_variable("locale", intent.recipient.locale.clone()),
+        render_variable("organization_id", intent.template.organization_id.clone()),
+        render_variable(
+            "recipient_display_name",
+            trimmed_optional(intent.recipient.display_name.as_deref()),
+        ),
+        render_variable("request_id", intent.template.request_id.clone()),
+        render_variable("role", role),
+        render_variable("scope", scope),
+        render_variable("scope_kind", intent.template.scope.kind.clone()),
+    ];
+    if intent.template.event != AccessRequestNotificationEvent::Denied {
+        variables.push(render_variable(
+            "expires_at",
+            intent
+                .template
+                .expires_at
+                .map(format_template_time)
+                .unwrap_or_default(),
+        ));
+    }
+    variables.sort_by(|left, right| left.name.cmp(&right.name));
+    notification_template::RenderRequest {
+        template_id: access_request_template_id(intent.template.event).to_owned(),
+        version: Some(crate::public::ACCESS_REQUEST_TEMPLATE_VERSION.to_owned()),
+        locale: intent.recipient.locale.clone(),
+        variables,
+    }
+}
+
+fn render_variables<const N: usize>(
+    variables: [(&str, String); N],
+) -> Vec<notification_template::RenderRequestVariablesItem> {
+    variables
+        .into_iter()
+        .map(|(name, value)| render_variable(name, value))
+        .collect()
+}
+
+fn render_variable(name: &str, value: String) -> notification_template::RenderRequestVariablesItem {
+    notification_template::RenderRequestVariablesItem {
+        name: name.to_owned(),
+        value,
+    }
+}
+
+fn trimmed_optional(value: Option<&str>) -> String {
+    value.map(str::trim).unwrap_or_default().to_owned()
+}
+
+fn format_template_time(value: DateTime<Utc>) -> String {
+    value.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+fn rendered_template(response: notification_template::RenderResponse) -> RenderedTemplate {
+    RenderedTemplate {
+        template_id: response.template_id,
+        template_version: response.version,
+        requested_locale: response.requested_locale,
+        resolved_locale: response.resolved_locale,
+        fallback_used: response.fallback_used,
+        renderer_identity: response.renderer_identity,
+        template_digest: response.template_digest,
+        content_digest: response.content_digest,
+        subject: response.subject,
+        text: response.text,
+        html: response.html,
+    }
+}
+
+fn map_template_render_error(
+    error: notification_template::NotificationTemplateRenderInvocationError,
+) -> RuntimeFailure {
+    match error {
+        notification_template::NotificationTemplateRenderInvocationError::Runtime(error) => error,
+        notification_template::NotificationTemplateRenderInvocationError::Domain(
+            notification_template::RenderError::NotFound,
+        ) => RuntimeFailure::PluginFailure {
+            detail: "required Notification Template version is unavailable".to_owned(),
+        },
+        notification_template::NotificationTemplateRenderInvocationError::Domain(
+            notification_template::RenderError::Unauthorized,
+        ) => RuntimeFailure::PluginFailure {
+            detail:
+                "Notification is not authorized to render through its configured Template Provider"
+                    .to_owned(),
+        },
+        notification_template::NotificationTemplateRenderInvocationError::Domain(_) => {
+            RuntimeFailure::ProtocolViolation {
+                capability: notification_template::CAPABILITY_ID,
+            }
+        }
     }
 }
 
@@ -1477,6 +1690,7 @@ mod tests {
     const EMPTY_PACKAGE_ID: &str = "test.without-notification";
     const SECRETS_PACKAGE_ID: &str = "test.notification-secrets";
     const EMAIL_PACKAGE_ID: &str = "test.notification-email-dispatch";
+    const TEMPLATE_PACKAGE_ID: &str = "test.notification-template";
 
     #[derive(Clone, Copy, Debug)]
     enum FixtureOutcome {
@@ -1662,7 +1876,8 @@ mod tests {
             required,
             vec![
                 lenso_capability_secrets::CAPABILITY_ID,
-                email::CAPABILITY_ID
+                email::CAPABILITY_ID,
+                notification_template::CAPABILITY_ID,
             ]
         );
         let linked = NativePluginRegistry::new()
@@ -1671,6 +1886,132 @@ mod tests {
             .filter(|factory| factory.package_id() == PACKAGE_ID)
             .count();
         assert_eq!(linked, 1);
+    }
+
+    #[test]
+    fn template_requests_are_exact_versioned_and_event_typed() {
+        let expires_at = parse_time("2026-09-01T00:00:00Z").expect("timestamp");
+        let invitation = CreateTransactionalEmailIntent {
+            source: IntentSource {
+                module_id: "organization-blue".to_owned(),
+                entity_type: "organization_invitation".to_owned(),
+                entity_id: "invite_1".to_owned(),
+            },
+            recipient: EmailRecipient {
+                address: "member@example.com".to_owned(),
+                display_name: Some(" Member ".to_owned()),
+                locale: "en-US".to_owned(),
+            },
+            template: OrganizationInvitationTemplateV1 {
+                organization_id: "org_1".to_owned(),
+                organization_name: " Acme ".to_owned(),
+                invitation_id: "invite_1".to_owned(),
+                invitation_url: "https://example.test/invite".to_owned(),
+                inviter_display_name: None,
+                role_name: Some(" Member ".to_owned()),
+                expires_at,
+            },
+            idempotency_key: "organization-invitation:invite_1".to_owned(),
+            correlation_id: "corr_1".to_owned(),
+            causation_id: None,
+            requested_by: None,
+        };
+        let request = organization_invitation_render_request(&invitation);
+        assert_eq!(request.template_id, "organization-invitation");
+        assert_eq!(request.version.as_deref(), Some("v1"));
+        assert_eq!(request.locale, "en-US");
+        let variables = request
+            .variables
+            .into_iter()
+            .map(|item| (item.name, item.value))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(variables.len(), 7);
+        assert_eq!(variables["organization_name"], "Acme");
+        assert_eq!(variables["recipient_display_name"], "Member");
+        assert_eq!(variables["inviter_display_name"], "");
+        assert_eq!(variables["expires_at"], "2026-09-01T00:00:00Z");
+
+        let mut access = CreateAccessRequestNotificationIntent {
+            source: IntentSource {
+                module_id: "access-request-blue".to_owned(),
+                entity_type: "access_request".to_owned(),
+                entity_id: "ar_1".to_owned(),
+            },
+            recipient: EmailRecipient {
+                address: "member@example.com".to_owned(),
+                display_name: None,
+                locale: "en".to_owned(),
+            },
+            template: AccessRequestNotificationTemplateV1 {
+                request_id: "ar_1".to_owned(),
+                organization_id: "org_1".to_owned(),
+                event: AccessRequestNotificationEvent::Submitted,
+                role: AccessRequestRoleV1 {
+                    role_id: "role_member".to_owned(),
+                    display_name: None,
+                },
+                scope: AccessRequestScopeV1 {
+                    kind: "organization".to_owned(),
+                    id: "org_1".to_owned(),
+                    display_name: None,
+                },
+                expires_at: Some(expires_at),
+            },
+            idempotency_key: "access-request:ar_1:submitted".to_owned(),
+            correlation_id: "corr_2".to_owned(),
+            causation_id: None,
+            requested_by: None,
+        };
+        let submitted = access_request_render_request(&access);
+        assert_eq!(submitted.template_id, "access-request-submitted");
+        assert!(
+            submitted
+                .variables
+                .iter()
+                .any(|item| item.name == "expires_at")
+        );
+
+        access.template.event = AccessRequestNotificationEvent::Denied;
+        access.template.expires_at = None;
+        let denied = access_request_render_request(&access);
+        assert_eq!(denied.template_id, "access-request-denied");
+        assert!(
+            denied
+                .variables
+                .iter()
+                .all(|item| item.name != "expires_at")
+        );
+    }
+
+    #[test]
+    fn template_render_failures_preserve_runtime_and_fail_closed_on_domain_results() {
+        let runtime = RuntimeFailure::Unavailable {
+            capability: notification_template::CAPABILITY_ID,
+        };
+        assert!(matches!(
+            map_template_render_error(
+                notification_template::NotificationTemplateRenderInvocationError::Runtime(runtime)
+            ),
+            RuntimeFailure::Unavailable { capability }
+                if capability == notification_template::CAPABILITY_ID
+        ));
+        assert!(matches!(
+            map_template_render_error(
+                notification_template::NotificationTemplateRenderInvocationError::Domain(
+                    notification_template::RenderError::NotFound,
+                )
+            ),
+            RuntimeFailure::PluginFailure { .. }
+        ));
+        assert!(matches!(
+            map_template_render_error(
+                notification_template::NotificationTemplateRenderInvocationError::Domain(
+                    notification_template::RenderError::UnexpectedVariable,
+                )
+            ),
+            RuntimeFailure::ProtocolViolation { capability }
+                if capability == notification_template::CAPABILITY_ID
+        ));
     }
 
     #[test]
@@ -2278,7 +2619,8 @@ mod tests {
                 NativePluginRegistry::new()
                     .with_linked_factories()
                     .with_factory(EmptyFactory(SECRETS_PACKAGE_ID))
-                    .with_factory(EmptyFactory(EMAIL_PACKAGE_ID)),
+                    .with_factory(EmptyFactory(EMAIL_PACKAGE_ID))
+                    .with_factory(EmptyFactory(TEMPLATE_PACKAGE_ID)),
             ))
             .expect_err("invalid Notification authority must reject startup");
         assert!(matches!(error, RuntimeFailure::InvalidResolvedPlan { .. }));
@@ -2476,6 +2818,10 @@ mod tests {
             .with_requirement(CapabilityRequirementPlan::one(
                 email::CAPABILITY_ID,
                 email::DESCRIPTOR_VERSION,
+            ))
+            .with_requirement(CapabilityRequirementPlan::one(
+                notification_template::CAPABILITY_ID,
+                notification_template::DESCRIPTOR_VERSION,
             ));
         let secrets = PluginInstancePlan::new("secrets", SECRETS_PACKAGE_ID).with_capability(
             CapabilityEndpointPlan::new(
@@ -2491,8 +2837,14 @@ mod tests {
                 [email::DISPATCH_OPERATION],
             ),
         );
+        let template_provider = PluginInstancePlan::new("templates", TEMPLATE_PACKAGE_ID)
+            .with_capability(CapabilityEndpointPlan::new(
+                notification_template::CAPABILITY_ID,
+                notification_template::DESCRIPTOR_VERSION,
+                [notification_template::RENDER_OPERATION],
+            ));
         AppComposition::new(
-            vec![notification, secrets, email_provider],
+            vec![notification, secrets, email_provider, template_provider],
             vec![
                 CapabilityBinding::new(
                     "notification",
@@ -2505,6 +2857,12 @@ mod tests {
                     email::CAPABILITY_ID,
                     email::DESCRIPTOR_VERSION,
                     "email",
+                ),
+                CapabilityBinding::new(
+                    "notification",
+                    notification_template::CAPABILITY_ID,
+                    notification_template::DESCRIPTOR_VERSION,
+                    "templates",
                 ),
             ],
         )
@@ -2530,6 +2888,7 @@ mod tests {
             .expect("valid unprepared test Plugin"),
             secrets: Port::new(),
             email: Port::new(),
+            templates: Port::new(),
             state: Rc::new(RefCell::new(None)),
         }
     }
