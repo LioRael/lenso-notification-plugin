@@ -3,18 +3,42 @@ name: Release-plz
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      live:
+        description: Publish unpublished crate versions and create their releases
+        required: true
+        default: false
+        type: boolean
+      confirm:
+        description: Type publish when live is enabled
+        required: false
+        type: string
 
 permissions: {}
 
+concurrency:
+  group: notification-crates-release
+  cancel-in-progress: false
+
 jobs:
-  release-plz-release:
-    name: Release-plz release
-    if: ${{ github.repository_owner == 'LioRael' }}
+  reject-unconfirmed-live-release:
+    name: Reject unconfirmed live release
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.live && (inputs.confirm != 'publish' || github.ref != 'refs/heads/main') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Explain the rejected release
+        run: |
+          echo "Live publication requires confirm=publish and ref=main." >&2
+          exit 1
+
+  dry-run:
+    name: Release dry-run
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.live && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
       pull-requests: read
-      id-token: write
     steps:
       - &checkout
         name: Checkout repository
@@ -27,7 +51,26 @@ jobs:
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # stable
         with:
           toolchain: 1.94.0
-      - name: Publish released crates
+      - name: Validate the release without publishing
+        uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
+        with:
+          command: release
+          dry_run: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    name: Publish crates
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.live && inputs.confirm == 'publish' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: read
+      id-token: write
+    steps:
+      - *checkout
+      - *install-rust
+      - name: Publish unpublished crates
         uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
         with:
           command: release
@@ -36,7 +79,7 @@ jobs:
 
   release-plz-pr:
     name: Release-plz PR
-    if: ${{ github.repository_owner == 'LioRael' }}
+    if: ${{ github.event_name == 'push' && github.repository_owner == 'LioRael' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write

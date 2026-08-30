@@ -1,16 +1,12 @@
 {
-  "name": "@lenso/notification-module-workspace",
+  "name": "@lenso/notification-plugin-workspace",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "pnpm --dir packages/notification-console build",
-    "build:console-artifact": "pnpm build && node scripts/build-console-artifact.mjs",
-    "build:release-receipt": "node scripts/build-release-receipt.mjs",
     "check": "pnpm check:contracts && pnpm test && pnpm typecheck && pnpm build",
     "check:contracts": "node scripts/verify-contracts.mjs",
-    "check:ecosystem": "node scripts/verify-ecosystem-contracts.mjs",
-    "generate:console-manifest": "node scripts/generate-console-manifest.mjs",
     "test": "vitest run packages/notification-console/src",
     "typecheck": "tsc -b --pretty false"
   },

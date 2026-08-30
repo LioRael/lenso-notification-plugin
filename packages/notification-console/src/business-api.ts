@@ -1,7 +1,7 @@
 import type { ConsoleClient, SurfaceOperationRequestContext } from "@lenso/console-module-api";
 import contract from "./notification-business-api.v1.json";
 
-export const NOTIFICATION_CONTRACT_DIGEST = "sha256:ebbbec96b0657a1158850b1fddbee702367387dfb7f610c9c1ab15d4200089f5" as const;
+export const NOTIFICATION_CONTRACT_DIGEST = "sha256:2408bb3ab10ae5c3eaddd237ee6f2cb3e07b44fbc5f4f70273b4265cf1d2beb2" as const;
 export const NOTIFICATION_OPERATION_IDS = {
   getDelivery: "notification/http/GET:/deliveries/{id}",
   listDeliveries: "notification/http/GET:/deliveries",

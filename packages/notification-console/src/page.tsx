@@ -70,14 +70,14 @@ export function NotificationDeliveriesPage() {
 
   if (!client.capabilities.has(READ_CAPABILITY)) {
     return (
-      <SurfaceRoot moduleId="lenso/notification" surfaceId="deliveries">
+      <SurfaceRoot moduleId="lenso.notification" surfaceId="deliveries">
         <PageState title="Delivery access denied" description="This operator cannot read Notification delivery records." />
       </SurfaceRoot>
     );
   }
 
   return (
-    <SurfaceRoot moduleId="lenso/notification" surfaceId="deliveries">
+    <SurfaceRoot moduleId="lenso.notification" surfaceId="deliveries">
       <ConsolePage data-page="notification-deliveries-page">
         <ConsolePage.Header>
           <ConsolePage.Heading>

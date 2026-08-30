@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["observation_id", "organization_id", "invitation_id", "lifecycle", "observed_at"],
+  "properties": {
+    "observation_id": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "organization_id": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "invitation_id": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "lifecycle": { "type": "string", "enum": ["accepted", "expired", "revoked"] },
+    "observed_at": { "type": "string", "format": "date-time", "minLength": 1, "maxLength": 64 }
+  }
+}

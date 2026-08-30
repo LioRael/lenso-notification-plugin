@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["delivery_id", "revision", "idempotency_key"],
+  "properties": {
+    "delivery_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 240 }
+  }
+}

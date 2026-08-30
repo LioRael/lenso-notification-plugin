@@ -1,0 +1,22 @@
+{
+  "id": "lenso.notification.transactional@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "create_organization_invitation",
+      "interaction": "request",
+      "request_schema": "schemas/create-organization-invitation-request.schema.json",
+      "response_schema": "schemas/create-organization-invitation-response.schema.json",
+      "domain_error_schema": "schemas/create-organization-invitation-error.schema.json"
+    },
+    {
+      "name": "observe_invitation_lifecycle",
+      "interaction": "request",
+      "request_schema": "schemas/observe-invitation-lifecycle-request.schema.json",
+      "response_schema": "schemas/observe-invitation-lifecycle-response.schema.json",
+      "domain_error_schema": "schemas/observe-invitation-lifecycle-error.schema.json"
+    }
+  ]
+}

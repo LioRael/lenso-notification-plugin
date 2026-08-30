@@ -1,30 +1,132 @@
-# Lenso Notification Module
+# Lenso Notification Plugin
 
-Linked Rust Module and release-bound Console Surface for transactional email
-notification intent, immutable rendering, attempts, receipts, retry decisions,
-and final status.
+This repository owns removable, PostgreSQL-backed transactional Notification
+behavior for Lenso applications. The first supported purpose is
+`organization-invitation@v1`. SMS, push, campaigns, arbitrary-send operations,
+credential editing, and visual template editing remain outside the boundary.
 
-The first supported purpose is `organization-invitation@v1`. SMS, Push,
-campaigns, arbitrary-send endpoints, credential editing, and visual template
-editing are deliberately absent.
+The workspace contains four portable Capability Contracts and one native
+implementation:
 
-## Authoring dependency
+- `lenso.notification.transactional@1` creates invitation intent and records
+  source lifecycle observations.
+- `lenso.notification.delivery@1` claims due work and records authoritative
+  delivery receipts.
+- `lenso.notification.admin@1` reads the redacted ledger and requests an
+  explicit manual retry.
+- `lenso.email-dispatch@1` is the required external email-effect role.
+- `lenso-notification-plugin` provides the three Notification roles as Plugin
+  `lenso.notification` in root Slot `notifications`.
 
-This Module uses the public Linked Event/Runtime authoring facade shipped in
-`lenso 0.3.44` through the `host` feature. It builds from the published crate
-without sibling checkout patches. No `lenso-platform-*` crate is a direct
-dependency.
+Generated Clients and Providers are the only public business call surface.
+Binding a Capability is necessary but not sufficient authority: immutable
+configuration allowlists exact caller Instance keys for transactional,
+dispatch, authoritative receipt, and admin operations independently. Source identity is always derived from the
+Kernel-authenticated caller; request payloads cannot claim another Plugin.
 
-## Checks
+## Delivery and storage
 
-```sh
-cargo test --workspace
-pnpm install
-pnpm generate:console-manifest
-pnpm check
-pnpm build:release-receipt
-EMAIL_PROVIDER_SERVICE_ROOT=/path/to/lenso-email-provider-service pnpm check:ecosystem
+Notification owns its PostgreSQL schema, business attempts, receipts, and
+retry decisions. Claiming a delivery appends the attempt before invoking the
+exact bound `lenso.email-dispatch@1` Provider. SMTP or provider acceptance is
+`accepted`, never `delivered`; only an authoritative receipt produces
+`delivered`. A Runtime failure or invalid Provider response after invocation is
+recorded as terminal `delivery_unknown` and is never retried automatically.
+
+The invitation source may observe `accepted`, `revoked`, or `expired`; each
+caller-scoped, idempotent observation cancels only still-queued or scheduled
+work for that source invitation.
+
+Schema lifecycle is operator-owned:
+
+```rust
+use notification::NotificationOperator;
+
+NotificationOperator::setup(&database_url).await?;
+NotificationOperator::upgrade(&database_url).await?;
 ```
 
-See [the domain boundary](docs/domain/notification.md) and the templates in
-`release/` for immutable Module Release and Surface API Grant binding.
+Plugin `prepare` resolves the database URL and 32-byte base64 snapshot key via
+`lenso.secrets@1`, then only validates the already-managed `notification`
+schema: both the migration ledger and the complete managed catalog fingerprint.
+It never runs setup or upgrade. Existing v0.3 installations first call
+`NotificationOperator::adopt_legacy`; that explicit, fail-closed operation
+requires the exact legacy Host migration-ledger evidence, builds a same-server
+temporary reference from the unchanged v1 SQL, and accepts only a catalog match
+including ownership, object/default ACLs, comments, relation attributes,
+columns/defaults, constraints, indexes, types, routines, policies, inheritance,
+rules, security labels, and publication membership. It never runs the reference
+SQL against `notification` and preserves all rows. Adoption is a one-time
+maintenance-window operation: it takes a shared lock on the legacy Host ledger
+and access-exclusive locks on all nine legacy Notification tables until commit,
+so reads and writes to those tables may block for the duration. Operators must
+stop all Notification writers and DDL actors: adoption first takes the shared
+database `:lenso-maintenance` advisory key used by cooperating schema operators,
+then the Notification-specific key. These advisory locks do not coordinate
+direct owner DDL, and the table locks do not prevent an arbitrary same-role
+`CREATE TABLE` or `CREATE FUNCTION` in the schema namespace. Every
+subsequent Plugin `prepare` repeats the full managed fingerprint and rejects
+objects that slipped into adoption or were added later.
+
+Legacy adoption records the proven immutable v1 schema only. Operators then
+run `NotificationOperator::upgrade` before selecting a Plugin version whose
+schema plan includes later migrations, including the `expired` invitation
+lifecycle constraint.
+
+## vNext compatibility boundary
+
+This is a deliberate breaking migration. The old `lenso-module-notification`
+package, `HostLinkedModule`, shared transaction API, Host Outbox, Runtime
+function, Event subscription, generated module manifest, and Console manifest
+hook are not retained as compatibility shims. Applications on the v0.3 lane,
+including the current invitation example, must remain on their historical
+dependency until they select this Plugin and call generated Capability Clients.
+
+The existing `lenso-email-provider-service` is also on the legacy lane. A
+deployable composition requires an email Plugin that implements
+`lenso.email-dispatch@1`; repository test Providers prove the generated
+boundary but are not production implementations.
+
+That email contract treats `invalid_dispatch` and `unsupported_message` as
+pre-effect Domain rejections only. Once an external effect starts, the Provider
+must report uncertainty as response `delivery_unknown` or Runtime failure;
+Notification terminalizes Runtime and invalid protocol results as
+`delivery_unknown` and does not retry them.
+
+The Admin wire projection is deliberately bounded: list pages contain at most
+200 deliveries, one detail response contains at most 10 attempts and 1,000 each
+of receipts and retry decisions, and revisions stay within the portable
+JavaScript-safe integer range. Detail queries fetch one row beyond each evidence
+limit and return `evidence_overflow` rather than silently truncating history.
+
+## Console artifact
+
+`packages/notification-console` is retained as a static, buildable UI artifact.
+It is not an App-reachable Surface in this migration. A separate Web/Console
+Adapter must require `lenso.notification.admin@1` and publish the supported
+`lenso.http.endpoint@1` boundary before the UI can be selected.
+
+The current `lenso-web` endpoint authoring revision still resolves older Lenso
+core/runtime/protocol source revisions than this Plugin. Importing it here
+would create duplicate Kernel types, so this repository deliberately contains
+no HTTP Adapter, path patch, or legacy Host shim. The prerequisite is dependency
+alignment in `lenso-web`, followed by a separately removable Adapter Plugin.
+
+See [the Plugin card](docs/plugin-card.md) and
+[the domain boundary](docs/domain/notification.md).
+
+## Development
+
+```sh
+cargo fmt --all -- --check
+cargo check --locked --workspace --all-targets
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+pnpm install --frozen-lockfile
+pnpm check
+```
+
+The PostgreSQL acceptance uses `LENSO_TEST_DATABASE_URL` and refuses destructive
+setup unless `current_database()` is exactly `notification_test` or starts with
+`notification_test_`. Local runs without the variable skip that test; CI always
+provides a dedicated PostgreSQL 18 service and fails if the URL is absent.

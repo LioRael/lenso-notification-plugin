@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["delivery_id", "revision", "status", "scheduled_at", "idempotent_replay"],
+  "properties": {
+    "delivery_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "status": { "type": "string", "enum": ["retry_scheduled"] },
+    "scheduled_at": { "type": "string", "format": "date-time", "minLength": 1, "maxLength": 64 },
+    "idempotent_replay": { "type": "boolean" }
+  }
+}

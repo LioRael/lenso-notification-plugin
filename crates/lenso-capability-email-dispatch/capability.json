@@ -1,0 +1,15 @@
+{
+  "id": "lenso.email-dispatch@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "dispatch",
+      "interaction": "request",
+      "request_schema": "schemas/dispatch-request.schema.json",
+      "response_schema": "schemas/dispatch-response.schema.json",
+      "domain_error_schema": "schemas/dispatch-error.schema.json"
+    }
+  ]
+}

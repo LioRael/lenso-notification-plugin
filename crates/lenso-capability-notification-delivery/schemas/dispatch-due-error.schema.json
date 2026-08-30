@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    { "const": "unauthorized" },
+    { "const": "no_delivery_due" },
+    { "const": "dispatch_rejected" }
+  ]
+}

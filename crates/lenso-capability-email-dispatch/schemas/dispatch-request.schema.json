@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["delivery_id", "attempt_id", "run_id", "idempotency_key", "recipient", "message", "correlation_id"],
+  "properties": {
+    "delivery_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "attempt_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "run_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "recipient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address"],
+      "properties": {
+        "address": { "type": "string", "minLength": 3, "maxLength": 320, "x-lenso-sensitive": true }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template_id", "template_version", "locale", "subject", "text", "html", "content_digest"],
+      "properties": {
+        "template_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "template_version": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "locale": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 998, "x-lenso-sensitive": true },
+        "text": { "type": "string", "minLength": 1, "maxLength": 131072, "x-lenso-sensitive": true },
+        "html": { "type": "string", "minLength": 1, "maxLength": 262144, "x-lenso-sensitive": true },
+        "content_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "correlation_id": { "type": "string", "minLength": 1, "maxLength": 240 }
+  }
+}

@@ -1,114 +1,49 @@
 use crate::contracts::{
     DispatchOutcome, EMAIL_DISPATCH_OBSERVED_EVENT, EMAIL_RECEIPT_OBSERVED_EVENT,
     EmailDispatchObserved, EmailReceiptObserved, ORGANIZATION_INVITATION_ACCEPTED_EVENT,
-    ORGANIZATION_INVITATION_REVOKED_EVENT, OrganizationInvitationLifecycle,
-    RUNTIME_FUNCTION_TERMINAL_EVENT, ReceiptKind, RuntimeFunctionTerminal,
+    ORGANIZATION_INVITATION_EXPIRED_EVENT, ORGANIZATION_INVITATION_REVOKED_EVENT,
+    OrganizationInvitationLifecycle, ReceiptKind, SanitizedFailure,
 };
-use crate::domain::RetryPolicy;
-use async_trait::async_trait;
-use lenso::host::outbox::{AppError, AppResult, ClaimedOutboxEvent, ErrorCode, EventHandler};
-use lenso::host::runtime::AppContext;
-use lenso::host::transaction::{DbPool, LinkedTransaction};
+use crate::domain::{MAX_SAFE_WIRE_INTEGER, RetryPolicy};
+use crate::error::{ErrorCode, NotificationError, NotificationResult};
 use sha2::{Digest as _, Sha256};
+use sqlx::{PgPool, Postgres, Transaction};
 
-const DISPATCH_HANDLER: &str = "notification.apply-email-dispatch-observation.v1";
-const RECEIPT_HANDLER: &str = "notification.apply-email-receipt.v1";
-const TERMINAL_HANDLER: &str = "notification.apply-runtime-terminal.v1";
-const INVITATION_ACCEPTED_HANDLER: &str = "notification.apply-invitation-accepted.v1";
-const INVITATION_REVOKED_HANDLER: &str = "notification.apply-invitation-revoked.v1";
-const EMAIL_RUNTIME_OWNER: &str = "lenso/email-delivery";
-const EMAIL_DISPATCH_FUNCTION: &str = "lenso.email.dispatch.v1";
-
+/// Private idempotency envelope for observations admitted through a typed
+/// Capability. It is not a Host Event or transport-level Outbox record.
 #[derive(Debug, Clone)]
-pub struct NotificationEventHandler {
-    app: AppContext,
-    handler_name: &'static str,
-    event_name: &'static str,
+pub struct ObservationEnvelope {
+    pub id: String,
+    pub event_name: String,
+    pub event_version: i32,
+    pub source_module: String,
+    pub aggregate_id: String,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+    pub payload: serde_json::Value,
 }
 
-impl NotificationEventHandler {
-    pub fn dispatch_observed(app: AppContext) -> Self {
-        Self {
-            app,
-            handler_name: DISPATCH_HANDLER,
-            event_name: EMAIL_DISPATCH_OBSERVED_EVENT,
-        }
-    }
-
-    pub fn receipt_observed(app: AppContext) -> Self {
-        Self {
-            app,
-            handler_name: RECEIPT_HANDLER,
-            event_name: EMAIL_RECEIPT_OBSERVED_EVENT,
-        }
-    }
-
-    pub fn runtime_terminal(app: AppContext) -> Self {
-        Self {
-            app,
-            handler_name: TERMINAL_HANDLER,
-            event_name: RUNTIME_FUNCTION_TERMINAL_EVENT,
-        }
-    }
-
-    pub fn invitation_accepted(app: AppContext) -> Self {
-        Self {
-            app,
-            handler_name: INVITATION_ACCEPTED_HANDLER,
-            event_name: ORGANIZATION_INVITATION_ACCEPTED_EVENT,
-        }
-    }
-
-    pub fn invitation_revoked(app: AppContext) -> Self {
-        Self {
-            app,
-            handler_name: INVITATION_REVOKED_HANDLER,
-            event_name: ORGANIZATION_INVITATION_REVOKED_EVENT,
-        }
-    }
-}
-
-#[async_trait]
-impl EventHandler for NotificationEventHandler {
-    fn handler_name(&self) -> &str {
-        self.handler_name
-    }
-
-    fn event_name(&self) -> &str {
-        self.event_name
-    }
-
-    async fn handle(&self, event: &ClaimedOutboxEvent) -> AppResult<()> {
-        NotificationEventApplier::new(self.app.db.clone())
-            .apply_for(self.event_name, event)
-            .await
-    }
-}
-
-/// Applies the same idempotent business transitions used by the Host Event
-/// handlers. Keeping the database seam explicit makes the full delivery
-/// lifecycle testable without manufacturing a private Host `AppContext`.
+/// Applies idempotent delivery observations admitted by generated Capabilities.
 #[derive(Debug, Clone)]
 pub struct NotificationEventApplier {
-    db: DbPool,
+    db: PgPool,
 }
 
 impl NotificationEventApplier {
-    pub fn new(db: DbPool) -> Self {
+    pub fn new(db: PgPool) -> Self {
         Self { db }
     }
 
-    pub async fn apply(&self, event: &ClaimedOutboxEvent) -> AppResult<()> {
+    pub async fn apply(&self, event: &ObservationEnvelope) -> NotificationResult<()> {
         self.apply_for(event.event_name.as_str(), event).await
     }
 
     async fn apply_for(
         &self,
         expected_event_name: &str,
-        event: &ClaimedOutboxEvent,
-    ) -> AppResult<()> {
+        event: &ObservationEnvelope,
+    ) -> NotificationResult<()> {
         if event.event_name != expected_event_name || event.event_version != 1 {
-            return Err(AppError::new(
+            return Err(NotificationError::new(
                 ErrorCode::Validation,
                 "Notification received an undeclared Event contract",
             ));
@@ -124,15 +59,13 @@ impl NotificationEventApplier {
                 validate_receipt(&payload)?;
                 apply_receipt(&self.db, event, &payload).await
             }
-            RUNTIME_FUNCTION_TERMINAL_EVENT => {
-                let payload: RuntimeFunctionTerminal = decode_payload(event)?;
-                apply_runtime_terminal(&self.db, event, &payload).await
-            }
-            ORGANIZATION_INVITATION_ACCEPTED_EVENT | ORGANIZATION_INVITATION_REVOKED_EVENT => {
+            ORGANIZATION_INVITATION_ACCEPTED_EVENT
+            | ORGANIZATION_INVITATION_EXPIRED_EVENT
+            | ORGANIZATION_INVITATION_REVOKED_EVENT => {
                 let payload: OrganizationInvitationLifecycle = decode_payload(event)?;
                 apply_invitation_lifecycle(&self.db, event, &payload).await
             }
-            _ => Err(AppError::new(
+            _ => Err(NotificationError::new(
                 ErrorCode::Validation,
                 "Notification Event handler is misconfigured",
             )),
@@ -141,11 +74,11 @@ impl NotificationEventApplier {
 }
 
 async fn apply_dispatch_observation(
-    db: &DbPool,
-    event: &ClaimedOutboxEvent,
+    db: &PgPool,
+    event: &ObservationEnvelope,
     payload: &EmailDispatchObserved,
-) -> AppResult<()> {
-    let mut tx = LinkedTransaction::begin(db).await?;
+) -> NotificationResult<()> {
+    let mut tx = db.begin().await?;
     if claim_event(&mut tx, event, payload.observed_at).await? {
         tx.commit().await?;
         return Ok(());
@@ -163,11 +96,11 @@ async fn apply_dispatch_observation(
     )
     .bind(&payload.delivery_id)
     .bind(&payload.attempt_id)
-    .fetch_optional(&mut **tx.sql())
+    .fetch_optional(tx.as_mut())
     .await
     .map_err(map_sql_error)?
     .ok_or_else(|| {
-        AppError::new(
+        NotificationError::new(
             ErrorCode::NotFound,
             "Email dispatch observation does not match a Notification attempt",
         )
@@ -182,7 +115,7 @@ async fn apply_dispatch_observation(
         has_receipt,
     ) = row;
     if function_run_id != payload.function_run_id {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Conflict,
             "Email dispatch observation function run does not match",
         ));
@@ -193,16 +126,19 @@ async fn apply_dispatch_observation(
             tx.commit().await?;
             return Ok(());
         }
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Conflict,
             "Notification delivery is not waiting for a dispatch observation",
         ));
     }
     if attempt_status != "dispatching" {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Conflict,
             "Notification attempt already has a business observation",
         ));
+    }
+    if revision >= MAX_SAFE_WIRE_INTEGER {
+        return Err(revision_exhausted());
     }
 
     match payload.outcome {
@@ -217,20 +153,23 @@ async fn apply_dispatch_observation(
                     .map(|failure| failure.code.as_str()),
             )
             .await?;
-            sqlx::query(
+            let updated = sqlx::query(
                 r#"
                 update notification.deliveries
                 set status = 'accepted', revision = revision + 1, accepted_at = $3,
                     updated_at = $3
-                where id = $1 and revision = $2 and status = 'attempting'
+                where id = $1 and revision = $2 and revision < $4
+                  and status = 'attempting'
                 "#,
             )
             .bind(&payload.delivery_id)
             .bind(revision)
             .bind(payload.observed_at)
-            .execute(&mut **tx.sql())
+            .bind(MAX_SAFE_WIRE_INTEGER)
+            .execute(tx.as_mut())
             .await
             .map_err(map_sql_error)?;
+            require_revision_update(updated.rows_affected())?;
             if let Some(receipt) = &payload.remote_receipt {
                 insert_receipt(
                     &mut tx,
@@ -272,21 +211,24 @@ async fn apply_dispatch_observation(
                     next_at = next_at
                         .max(payload.observed_at + chrono::Duration::milliseconds(bounded_ms));
                 }
-                sqlx::query(
+                let updated = sqlx::query(
                     r#"
                     update notification.deliveries
                     set status = 'retry_scheduled', revision = revision + 1,
                         next_attempt_at = $3, updated_at = $4
-                    where id = $1 and revision = $2 and status = 'attempting'
+                    where id = $1 and revision = $2 and revision < $5
+                      and status = 'attempting'
                     "#,
                 )
                 .bind(&payload.delivery_id)
                 .bind(revision)
                 .bind(next_at)
                 .bind(payload.observed_at)
-                .execute(&mut **tx.sql())
+                .bind(MAX_SAFE_WIRE_INTEGER)
+                .execute(tx.as_mut())
                 .await
                 .map_err(map_sql_error)?;
+                require_revision_update(updated.rows_affected())?;
                 insert_retry_decision(
                     &mut tx,
                     &payload.delivery_id,
@@ -366,7 +308,7 @@ async fn apply_dispatch_observation(
             .await?;
         }
     }
-    tx.commit().await
+    tx.commit().await.map_err(Into::into)
 }
 
 fn late_observation_is_compatible(
@@ -380,11 +322,11 @@ fn late_observation_is_compatible(
 }
 
 async fn apply_receipt(
-    db: &DbPool,
-    event: &ClaimedOutboxEvent,
+    db: &PgPool,
+    event: &ObservationEnvelope,
     payload: &EmailReceiptObserved,
-) -> AppResult<()> {
-    let mut tx = LinkedTransaction::begin(db).await?;
+) -> NotificationResult<()> {
+    let mut tx = db.begin().await?;
     if claim_event(&mut tx, event, payload.observed_at).await? {
         tx.commit().await?;
         return Ok(());
@@ -400,12 +342,12 @@ async fn apply_receipt(
     .bind(&payload.source)
     .bind(&payload.remote_id)
     .bind(kind)
-    .fetch_optional(&mut **tx.sql())
+    .fetch_optional(tx.as_mut())
     .await
     .map_err(map_sql_error)?
     {
         if existing != payload.digest {
-            return Err(AppError::new(
+            return Err(NotificationError::new(
                 ErrorCode::Conflict,
                 "Email receipt identity was replayed with a different digest",
             ));
@@ -424,27 +366,30 @@ async fn apply_receipt(
     )
     .bind(&payload.delivery_id)
     .bind(&payload.attempt_id)
-    .fetch_optional(&mut **tx.sql())
+    .fetch_optional(tx.as_mut())
     .await
     .map_err(map_sql_error)?
     .ok_or_else(|| {
-        AppError::new(
+        NotificationError::new(
             ErrorCode::NotFound,
             "Email receipt does not match a Notification attempt",
         )
     })?;
     let (status, revision, function_run_id, _attempt_status) = row;
     if function_run_id != payload.function_run_id {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Conflict,
             "Email receipt function run does not match",
         ));
     }
     if !matches!(status.as_str(), "attempting" | "accepted") {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Conflict,
             "Email receipt would regress a terminal Notification delivery",
         ));
+    }
+    if revision >= MAX_SAFE_WIRE_INTEGER {
+        return Err(revision_exhausted());
     }
     insert_receipt(
         &mut tx,
@@ -465,24 +410,27 @@ async fn apply_receipt(
             )
             .bind(&payload.attempt_id)
             .bind(payload.observed_at)
-            .execute(&mut **tx.sql())
+            .execute(tx.as_mut())
             .await
             .map_err(map_sql_error)?;
-            sqlx::query(
+            let updated = sqlx::query(
                 r#"
                 update notification.deliveries
                 set status = 'delivered', revision = revision + 1,
                     accepted_at = coalesce(accepted_at, $3), delivered_at = $3,
                     final_at = $3, final_reason = 'authoritative_delivery_receipt', updated_at = $3
-                where id = $1 and revision = $2 and status in ('attempting', 'accepted')
+                where id = $1 and revision = $2 and revision < $4
+                  and status in ('attempting', 'accepted')
                 "#,
             )
             .bind(&payload.delivery_id)
             .bind(revision)
             .bind(payload.observed_at)
-            .execute(&mut **tx.sql())
+            .bind(MAX_SAFE_WIRE_INTEGER)
+            .execute(tx.as_mut())
             .await
             .map_err(map_sql_error)?;
+            require_revision_update(updated.rows_affected())?;
         }
         ReceiptKind::Bounced | ReceiptKind::Rejected => {
             sqlx::query(
@@ -490,7 +438,7 @@ async fn apply_receipt(
             )
             .bind(&payload.attempt_id)
             .bind(payload.observed_at)
-            .execute(&mut **tx.sql())
+            .execute(tx.as_mut())
             .await
             .map_err(map_sql_error)?;
             finalize_delivery(
@@ -504,143 +452,99 @@ async fn apply_receipt(
             .await?;
         }
     }
-    tx.commit().await
-}
-
-async fn apply_runtime_terminal(
-    db: &DbPool,
-    event: &ClaimedOutboxEvent,
-    payload: &RuntimeFunctionTerminal,
-) -> AppResult<()> {
-    validate_runtime_terminal(payload)?;
-    let mut tx = LinkedTransaction::begin(db).await?;
-    if claim_event(&mut tx, event, event.occurred_at).await? {
-        tx.commit().await?;
-        return Ok(());
-    }
-    let row = sqlx::query_as::<_, (String, String, i64)>(
-        r#"
-        select attempts.id, deliveries.id, deliveries.revision
-        from notification.attempts attempts
-        join notification.deliveries deliveries on deliveries.id = attempts.delivery_id
-        where attempts.function_run_id = $1
-          and attempts.status = 'dispatching'
-          and deliveries.status = 'attempting'
-        for update of attempts, deliveries
-        "#,
-    )
-    .bind(&payload.function_run_id)
-    .fetch_optional(&mut **tx.sql())
-    .await
-    .map_err(map_sql_error)?;
-    let Some((attempt_id, delivery_id, revision)) = row else {
-        tx.commit().await?;
-        return Ok(());
-    };
-    sqlx::query(
-        r#"
-        update notification.attempts
-        set status = 'delivery_unknown', failure_code = $2,
-            failure_classification = $3, completed_at = $4
-        where id = $1 and status = 'dispatching'
-        "#,
-    )
-    .bind(attempt_id)
-    .bind(bounded(&payload.failure_code, 160))
-    .bind(&payload.failure_classification)
-    .bind(event.occurred_at)
-    .execute(&mut **tx.sql())
-    .await
-    .map_err(map_sql_error)?;
-    finalize_delivery(
-        &mut tx,
-        &delivery_id,
-        revision,
-        "delivery_unknown",
-        "provider_runtime_terminal_without_business_observation",
-        event.occurred_at,
-    )
-    .await?;
-    tx.commit().await
-}
-
-fn validate_runtime_terminal(payload: &RuntimeFunctionTerminal) -> AppResult<()> {
-    if payload.owner_module != EMAIL_RUNTIME_OWNER
-        || payload.function_name != EMAIL_DISPATCH_FUNCTION
-        || payload.terminal_state != "dead"
-        || !matches!(
-            payload.failure_classification.as_str(),
-            "permanent_failure" | "retry_exhausted"
-        )
-    {
-        return Err(AppError::new(
-            ErrorCode::Validation,
-            "Runtime terminal observation is not for the Email dispatch contract",
-        ));
-    }
-    Ok(())
+    tx.commit().await.map_err(Into::into)
 }
 
 async fn apply_invitation_lifecycle(
-    db: &DbPool,
-    event: &ClaimedOutboxEvent,
+    db: &PgPool,
+    event: &ObservationEnvelope,
     payload: &OrganizationInvitationLifecycle,
-) -> AppResult<()> {
-    let lifecycle = if event.event_name == ORGANIZATION_INVITATION_ACCEPTED_EVENT {
-        "accepted"
-    } else {
-        "revoked"
+) -> NotificationResult<()> {
+    let lifecycle = match event.event_name.as_str() {
+        ORGANIZATION_INVITATION_ACCEPTED_EVENT => "accepted",
+        ORGANIZATION_INVITATION_EXPIRED_EVENT => "expired",
+        _ => "revoked",
     };
-    let mut tx = LinkedTransaction::begin(db).await?;
+    let mut tx = db.begin().await?;
     if claim_event(&mut tx, event, payload.observed_at).await? {
         tx.commit().await?;
         return Ok(());
+    }
+    let delivery_revisions = sqlx::query_scalar::<_, i64>(
+        r#"
+        select deliveries.revision
+        from notification.deliveries deliveries
+        join notification.intents intents on intents.id = deliveries.intent_id
+        where intents.source_module = $2
+          and intents.source_entity_type = 'organization_invitation'
+          and intents.source_entity_id = $1
+          and deliveries.status in ('queued', 'retry_scheduled')
+          and intents.requested_at <= $3
+        order by deliveries.id
+        for update of deliveries
+        "#,
+    )
+    .bind(&payload.invitation_id)
+    .bind(&event.source_module)
+    .bind(payload.observed_at)
+    .fetch_all(tx.as_mut())
+    .await
+    .map_err(map_sql_error)?;
+    if delivery_revisions
+        .into_iter()
+        .any(|revision| revision >= MAX_SAFE_WIRE_INTEGER)
+    {
+        return Err(revision_exhausted());
     }
     sqlx::query(
         r#"
         insert into notification.source_lifecycle_events (
             event_id, source_module, source_entity_type, source_entity_id,
             lifecycle, observed_at, recorded_at
-        ) values ($1, 'organization', 'organization_invitation', $2, $3, $4, $5)
+        ) values ($1, $2, 'organization_invitation', $3, $4, $5, $6)
         "#,
     )
     .bind(&event.id)
+    .bind(&event.source_module)
     .bind(&payload.invitation_id)
     .bind(lifecycle)
     .bind(payload.observed_at)
     .bind(event.occurred_at)
-    .execute(&mut **tx.sql())
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     sqlx::query(
         r#"
         update notification.deliveries deliveries
         set status = 'failed', revision = revision + 1, next_attempt_at = null,
-            final_at = $3, final_reason = $4, updated_at = $3
+            final_at = $4, final_reason = $5, updated_at = $4
         from notification.intents intents
         where deliveries.intent_id = intents.id
-          and intents.source_module = 'organization'
+          and intents.source_module = $2
           and intents.source_entity_type = 'organization_invitation'
           and intents.source_entity_id = $1
           and deliveries.status in ('queued', 'retry_scheduled')
-          and intents.requested_at <= $2
+          and intents.requested_at <= $3
+          and deliveries.revision < $6
         "#,
     )
     .bind(&payload.invitation_id)
+    .bind(&event.source_module)
     .bind(payload.observed_at)
     .bind(event.occurred_at)
     .bind(format!("source_invitation_{lifecycle}"))
-    .execute(&mut **tx.sql())
+    .bind(MAX_SAFE_WIRE_INTEGER)
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
-    tx.commit().await
+    tx.commit().await.map_err(Into::into)
 }
 
 async fn claim_event(
-    tx: &mut LinkedTransaction<'_>,
-    event: &ClaimedOutboxEvent,
+    tx: &mut Transaction<'_, Postgres>,
+    event: &ObservationEnvelope,
     consumed_at: chrono::DateTime<chrono::Utc>,
-) -> AppResult<bool> {
+) -> NotificationResult<bool> {
     let digest = event_digest(event)?;
     let inserted = sqlx::query_scalar::<_, String>(
         r#"
@@ -654,7 +558,7 @@ async fn claim_event(
     .bind(&event.event_name)
     .bind(&digest)
     .bind(consumed_at)
-    .fetch_optional(&mut **tx.sql())
+    .fetch_optional(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     if inserted.is_some() {
@@ -664,11 +568,11 @@ async fn claim_event(
         "select event_digest from notification.consumed_events where event_id = $1",
     )
     .bind(&event.id)
-    .fetch_one(&mut **tx.sql())
+    .fetch_one(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     if existing != digest {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Conflict,
             "Notification Event id was replayed with different content",
         ));
@@ -677,11 +581,11 @@ async fn claim_event(
 }
 
 async fn update_attempt(
-    tx: &mut LinkedTransaction<'_>,
+    tx: &mut Transaction<'_, Postgres>,
     payload: &EmailDispatchObserved,
     status: &str,
     failure_code: Option<&str>,
-) -> AppResult<()> {
+) -> NotificationResult<()> {
     let (remote_id, remote_source, remote_digest) =
         payload
             .remote_receipt
@@ -716,7 +620,7 @@ async fn update_attempt(
             .map(|failure| bounded(&failure.classification, 160)),
     )
     .bind(payload.observed_at)
-    .execute(&mut **tx.sql())
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     Ok(())
@@ -727,9 +631,9 @@ async fn update_attempt(
 /// causally earlier dispatch observation arrives. Preserve the final state and
 /// only fill bounded attempt metadata; never regress delivery or attempt state.
 async fn absorb_late_dispatch_observation(
-    tx: &mut LinkedTransaction<'_>,
+    tx: &mut Transaction<'_, Postgres>,
     payload: &EmailDispatchObserved,
-) -> AppResult<()> {
+) -> NotificationResult<()> {
     let (remote_id, remote_source, remote_digest) =
         payload
             .remote_receipt
@@ -773,7 +677,7 @@ async fn absorb_late_dispatch_observation(
     )
     .bind(payload.observed_at)
     .bind(&payload.function_run_id)
-    .execute(&mut **tx.sql())
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     Ok(())
@@ -781,7 +685,7 @@ async fn absorb_late_dispatch_observation(
 
 #[allow(clippy::too_many_arguments)]
 async fn insert_receipt(
-    tx: &mut LinkedTransaction<'_>,
+    tx: &mut Transaction<'_, Postgres>,
     delivery_id: &str,
     attempt_id: &str,
     kind: &str,
@@ -790,7 +694,7 @@ async fn insert_receipt(
     digest: &str,
     observed_at: chrono::DateTime<chrono::Utc>,
     recorded_at: chrono::DateTime<chrono::Utc>,
-) -> AppResult<()> {
+) -> NotificationResult<()> {
     let id = stable_id("ntf_rcp", &format!("{source}:{remote_id}:{kind}"));
     sqlx::query(
         r#"
@@ -808,7 +712,7 @@ async fn insert_receipt(
     .bind(digest)
     .bind(observed_at)
     .bind(recorded_at)
-    .execute(&mut **tx.sql())
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     Ok(())
@@ -816,16 +720,16 @@ async fn insert_receipt(
 
 #[allow(clippy::too_many_arguments)]
 async fn insert_retry_decision(
-    tx: &mut LinkedTransaction<'_>,
+    tx: &mut Transaction<'_, Postgres>,
     delivery_id: &str,
     revision: i64,
-    event: &ClaimedOutboxEvent,
+    event: &ObservationEnvelope,
     kind: &str,
     decision: &str,
     reason: Option<&str>,
     scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
     created_at: chrono::DateTime<chrono::Utc>,
-) -> AppResult<()> {
+) -> NotificationResult<()> {
     sqlx::query(
         r#"
         insert into notification.retry_requests (
@@ -843,26 +747,27 @@ async fn insert_retry_decision(
     .bind(reason)
     .bind(scheduled_at)
     .bind(created_at)
-    .execute(&mut **tx.sql())
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     Ok(())
 }
 
 async fn finalize_delivery(
-    tx: &mut LinkedTransaction<'_>,
+    tx: &mut Transaction<'_, Postgres>,
     delivery_id: &str,
     revision: i64,
     status: &str,
     reason: &str,
     now: chrono::DateTime<chrono::Utc>,
-) -> AppResult<()> {
+) -> NotificationResult<()> {
     let result = sqlx::query(
         r#"
         update notification.deliveries
         set status = $3, revision = revision + 1, next_attempt_at = null,
             final_at = $4, final_reason = $5, updated_at = $4
-        where id = $1 and revision = $2 and status in ('attempting', 'accepted')
+        where id = $1 and revision = $2 and revision < $6
+          and status in ('attempting', 'accepted')
         "#,
     )
     .bind(delivery_id)
@@ -870,11 +775,12 @@ async fn finalize_delivery(
     .bind(status)
     .bind(now)
     .bind(reason)
-    .execute(&mut **tx.sql())
+    .bind(MAX_SAFE_WIRE_INTEGER)
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     if result.rows_affected() != 1 {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Conflict,
             "Notification delivery changed before finalization",
         ));
@@ -882,9 +788,26 @@ async fn finalize_delivery(
     Ok(())
 }
 
-fn decode_payload<T: serde::de::DeserializeOwned>(event: &ClaimedOutboxEvent) -> AppResult<T> {
+fn require_revision_update(rows_affected: u64) -> NotificationResult<()> {
+    if rows_affected == 1 {
+        Ok(())
+    } else {
+        Err(revision_exhausted())
+    }
+}
+
+fn revision_exhausted() -> NotificationError {
+    NotificationError::new(
+        ErrorCode::Conflict,
+        "Notification delivery revision exhausted the portable wire range",
+    )
+}
+
+fn decode_payload<T: serde::de::DeserializeOwned>(
+    event: &ObservationEnvelope,
+) -> NotificationResult<T> {
     serde_json::from_value(event.payload.clone()).map_err(|error| {
-        AppError::new(
+        NotificationError::new(
             ErrorCode::Validation,
             "Notification Event payload is invalid",
         )
@@ -892,7 +815,7 @@ fn decode_payload<T: serde::de::DeserializeOwned>(event: &ClaimedOutboxEvent) ->
     })
 }
 
-fn event_digest(event: &ClaimedOutboxEvent) -> AppResult<String> {
+fn event_digest(event: &ObservationEnvelope) -> NotificationResult<String> {
     let value = serde_json::json!({
         "id": event.id,
         "name": event.event_name,
@@ -902,51 +825,88 @@ fn event_digest(event: &ClaimedOutboxEvent) -> AppResult<String> {
         "payload": event.payload,
     });
     let encoded = serde_json::to_vec(&value).map_err(|error| {
-        AppError::new(ErrorCode::Internal, "Notification Event cannot be hashed").with_source(error)
+        NotificationError::new(ErrorCode::Internal, "Notification Event cannot be hashed")
+            .with_source(error)
     })?;
     Ok(format!("sha256:{}", hex::encode(Sha256::digest(encoded))))
 }
 
-fn validate_dispatch_observation(payload: &EmailDispatchObserved) -> AppResult<()> {
+fn validate_dispatch_observation(payload: &EmailDispatchObserved) -> NotificationResult<()> {
     for (field, value, limit) in [
         ("provider", payload.provider.as_str(), 160),
         ("deliveryId", payload.delivery_id.as_str(), 160),
         ("attemptId", payload.attempt_id.as_str(), 160),
         ("functionRunId", payload.function_run_id.as_str(), 160),
     ] {
-        if value.is_empty() || value.chars().count() > limit {
-            return Err(AppError::new(
+        if value.trim().is_empty() || value.chars().count() > limit {
+            return Err(NotificationError::new(
                 ErrorCode::Validation,
                 format!("Email dispatch observation {field} is invalid"),
             ));
         }
     }
-    if payload.outcome != DispatchOutcome::Accepted && payload.failure.is_none() {
-        return Err(AppError::new(
-            ErrorCode::Validation,
-            "Email failure observation requires sanitized failure metadata",
-        ));
-    }
     if let Some(receipt) = &payload.remote_receipt {
         validate_digest(&receipt.digest)?;
-        if receipt.remote_id.chars().count() > 320 || receipt.source.chars().count() > 160 {
-            return Err(AppError::new(
+        if receipt.remote_id.trim().is_empty()
+            || receipt.remote_id.chars().count() > 320
+            || receipt.source.trim().is_empty()
+            || receipt.source.chars().count() > 160
+        {
+            return Err(NotificationError::new(
                 ErrorCode::Validation,
-                "Email remote receipt metadata exceeds bounds",
+                "Email remote receipt metadata is invalid",
             ));
         }
+    }
+    let valid_shape = match payload.outcome {
+        DispatchOutcome::Accepted => payload.failure.is_none(),
+        DispatchOutcome::TemporaryFailure => {
+            payload.remote_receipt.is_none()
+                && payload.failure.as_ref().is_some_and(|failure| {
+                    valid_failure(failure, "temporary_failure")
+                        && failure
+                            .retry_after_ms
+                            .is_none_or(|delay| delay <= 86_400_000)
+                })
+        }
+        DispatchOutcome::PermanentFailure => {
+            payload.remote_receipt.is_none()
+                && payload.failure.as_ref().is_some_and(|failure| {
+                    valid_failure(failure, "permanent_failure") && failure.retry_after_ms.is_none()
+                })
+        }
+        DispatchOutcome::DeliveryUnknown => {
+            payload.remote_receipt.is_none()
+                && payload.failure.as_ref().is_some_and(|failure| {
+                    valid_failure(failure, "delivery_unknown") && failure.retry_after_ms.is_none()
+                })
+        }
+    };
+    if !valid_shape {
+        return Err(NotificationError::new(
+            ErrorCode::Validation,
+            "Email dispatch outcome metadata is inconsistent",
+        ));
     }
     Ok(())
 }
 
-fn validate_receipt(payload: &EmailReceiptObserved) -> AppResult<()> {
+fn valid_failure(failure: &SanitizedFailure, classification: &str) -> bool {
+    !failure.code.trim().is_empty()
+        && failure.code.chars().count() <= 160
+        && !failure.classification.trim().is_empty()
+        && failure.classification.chars().count() <= 160
+        && failure.classification == classification
+}
+
+fn validate_receipt(payload: &EmailReceiptObserved) -> NotificationResult<()> {
     validate_digest(&payload.digest)?;
     if payload.remote_id.is_empty()
         || payload.remote_id.chars().count() > 320
         || payload.source.is_empty()
         || payload.source.chars().count() > 160
     {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Validation,
             "Email receipt identity is invalid",
         ));
@@ -954,14 +914,14 @@ fn validate_receipt(payload: &EmailReceiptObserved) -> AppResult<()> {
     Ok(())
 }
 
-fn validate_digest(value: &str) -> AppResult<()> {
+fn validate_digest(value: &str) -> NotificationResult<()> {
     if value.strip_prefix("sha256:").is_none_or(|digest| {
         digest.len() != 64
             || !digest
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     }) {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Validation,
             "Email evidence digest is invalid",
         ));
@@ -978,8 +938,8 @@ fn stable_id(prefix: &str, input: &str) -> String {
     format!("{prefix}_{}", &digest[..32])
 }
 
-fn map_sql_error(error: sqlx::Error) -> AppError {
-    AppError::new(
+fn map_sql_error(error: sqlx::Error) -> NotificationError {
+    NotificationError::new(
         ErrorCode::Internal,
         "Notification Event storage operation failed",
     )
@@ -1010,6 +970,64 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_observation_rejects_inconsistent_or_unbounded_metadata() {
+        let valid_failure = SanitizedFailure {
+            code: "rate_limited".to_owned(),
+            classification: "temporary_failure".to_owned(),
+            retry_after_ms: Some(1_000),
+        };
+        let base = EmailDispatchObserved {
+            delivery_id: "ntf_dlv_1".to_owned(),
+            attempt_id: "ntf_att_1".to_owned(),
+            function_run_id: "ntf_run_1".to_owned(),
+            outcome: DispatchOutcome::TemporaryFailure,
+            provider: "smtp".to_owned(),
+            observed_at: chrono::Utc::now(),
+            remote_receipt: None,
+            failure: Some(valid_failure.clone()),
+        };
+        validate_dispatch_observation(&base).expect("valid temporary failure");
+
+        for invalid in [
+            EmailDispatchObserved {
+                failure: Some(SanitizedFailure {
+                    retry_after_ms: Some(86_400_001),
+                    ..valid_failure.clone()
+                }),
+                ..base.clone()
+            },
+            EmailDispatchObserved {
+                failure: Some(SanitizedFailure {
+                    code: String::new(),
+                    ..valid_failure.clone()
+                }),
+                ..base.clone()
+            },
+            EmailDispatchObserved {
+                failure: Some(SanitizedFailure {
+                    classification: "permanent_failure".to_owned(),
+                    ..valid_failure.clone()
+                }),
+                ..base.clone()
+            },
+            EmailDispatchObserved {
+                outcome: DispatchOutcome::Accepted,
+                ..base.clone()
+            },
+            EmailDispatchObserved {
+                remote_receipt: Some(crate::contracts::RemoteReceiptSummary {
+                    remote_id: "remote".to_owned(),
+                    source: "smtp".to_owned(),
+                    digest: format!("sha256:{}", "a".repeat(64)),
+                }),
+                ..base
+            },
+        ] {
+            assert!(validate_dispatch_observation(&invalid).is_err());
+        }
+    }
+
+    #[test]
     fn late_dispatch_absorption_requires_receipt_and_compatible_terminal_state() {
         assert!(late_observation_is_compatible(
             "delivered",
@@ -1036,34 +1054,5 @@ mod tests {
             false,
             DispatchOutcome::Accepted
         ));
-    }
-
-    #[test]
-    fn runtime_terminal_is_bound_to_email_delivery_owner_and_function() {
-        let valid = RuntimeFunctionTerminal {
-            failure_classification: "retry_exhausted".to_owned(),
-            failure_code: "provider_unavailable".to_owned(),
-            function_name: EMAIL_DISPATCH_FUNCTION.to_owned(),
-            function_run_id: "ntf_run_1".to_owned(),
-            owner_module: EMAIL_RUNTIME_OWNER.to_owned(),
-            terminal_state: "dead".to_owned(),
-        };
-        validate_runtime_terminal(&valid).expect("valid terminal");
-        let mut wrong_owner = valid.clone();
-        wrong_owner.owner_module = "lenso/another-provider".to_owned();
-        assert_eq!(
-            validate_runtime_terminal(&wrong_owner)
-                .expect_err("owner rejected")
-                .code,
-            ErrorCode::Validation
-        );
-        let mut wrong_function = valid;
-        wrong_function.function_name = "lenso.email.receipt-check.v1".to_owned();
-        assert_eq!(
-            validate_runtime_terminal(&wrong_function)
-                .expect_err("function rejected")
-                .code,
-            ErrorCode::Validation
-        );
     }
 }

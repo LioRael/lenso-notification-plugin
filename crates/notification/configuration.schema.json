@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "database_url_secret",
+    "snapshot_key_secret",
+    "transactional_callers",
+    "dispatch_callers",
+    "receipt_callers",
+    "admin_callers"
+  ],
+  "properties": {
+    "schema": { "const": "notification" },
+    "database_url_secret": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "snapshot_key_secret": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "transactional_callers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+    },
+    "dispatch_callers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+    },
+    "receipt_callers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+    },
+    "admin_callers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+    }
+  }
+}

@@ -1,8 +1,15 @@
 use chrono::{DateTime, Utc};
-use lenso::host::runtime::{AppContext, AppError, AppResult, ErrorCode};
-use lenso::host::transaction::{DbPool, LinkedTransaction};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
+use sqlx::PgPool;
+
+use crate::domain::MAX_SAFE_WIRE_INTEGER;
+
+use crate::error::{ErrorCode, NotificationError, NotificationResult};
+
+pub(crate) const ADMIN_ATTEMPT_LIMIT: usize = 10;
+pub(crate) const ADMIN_RECEIPT_LIMIT: usize = 1_000;
+pub(crate) const ADMIN_RETRY_REQUEST_LIMIT: usize = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeliverySummary {
@@ -81,15 +88,11 @@ pub struct RetryResult {
 
 #[derive(Debug, Clone)]
 pub struct PostgresNotificationRepository {
-    db: DbPool,
+    db: PgPool,
 }
 
 impl PostgresNotificationRepository {
-    pub fn new(app: AppContext) -> Self {
-        Self { db: app.db }
-    }
-
-    pub fn from_pool(db: DbPool) -> Self {
+    pub fn from_pool(db: PgPool) -> Self {
         Self { db }
     }
 
@@ -98,7 +101,7 @@ impl PostgresNotificationRepository {
         limit: i64,
         cursor: Option<&str>,
         status: Option<&str>,
-    ) -> AppResult<Vec<DeliverySummary>> {
+    ) -> NotificationResult<Vec<DeliverySummary>> {
         let rows = sqlx::query_as::<
             _,
             (
@@ -145,7 +148,10 @@ impl PostgresNotificationRepository {
         Ok(rows.into_iter().map(summary_from_row).collect())
     }
 
-    pub async fn get_delivery(&self, delivery_id: &str) -> AppResult<Option<DeliveryDetail>> {
+    pub async fn get_delivery(
+        &self,
+        delivery_id: &str,
+    ) -> NotificationResult<Option<DeliveryDetail>> {
         let row = sqlx::query_as::<
             _,
             (
@@ -208,26 +214,32 @@ impl PostgresNotificationRepository {
             from notification.attempts
             where delivery_id = $1
             order by sequence asc
+            limit $2
             "#,
         )
         .bind(delivery_id)
+        .bind(i64::try_from(ADMIN_ATTEMPT_LIMIT + 1).expect("Admin attempt limit fits bigint"))
         .fetch_all(&self.db)
         .await
-        .map_err(map_sql_error)?
-        .into_iter()
-        .map(|row| AttemptRecord {
-            id: row.0,
-            sequence: row.1,
-            function_run_id: row.2,
-            status: row.3,
-            provider: row.4,
-            remote_receipt_id: row.5,
-            failure_code: row.6,
-            failure_classification: row.7,
-            started_at: row.8,
-            completed_at: row.9,
-        })
-        .collect();
+        .map_err(map_sql_error)?;
+        if attempts.len() > ADMIN_ATTEMPT_LIMIT {
+            return Err(admin_evidence_overflow());
+        }
+        let attempts = attempts
+            .into_iter()
+            .map(|row| AttemptRecord {
+                id: row.0,
+                sequence: row.1,
+                function_run_id: row.2,
+                status: row.3,
+                provider: row.4,
+                remote_receipt_id: row.5,
+                failure_code: row.6,
+                failure_classification: row.7,
+                started_at: row.8,
+                completed_at: row.9,
+            })
+            .collect();
         let receipts = sqlx::query_as::<
             _,
             (
@@ -245,23 +257,29 @@ impl PostgresNotificationRepository {
             from notification.receipts
             where delivery_id = $1
             order by observed_at asc, id asc
+            limit $2
             "#,
         )
         .bind(delivery_id)
+        .bind(i64::try_from(ADMIN_RECEIPT_LIMIT + 1).expect("Admin receipt limit fits bigint"))
         .fetch_all(&self.db)
         .await
-        .map_err(map_sql_error)?
-        .into_iter()
-        .map(|row| ReceiptRecord {
-            id: row.0,
-            attempt_id: row.1,
-            kind: row.2,
-            source: row.3,
-            remote_id: row.4,
-            digest: row.5,
-            observed_at: row.6,
-        })
-        .collect();
+        .map_err(map_sql_error)?;
+        if receipts.len() > ADMIN_RECEIPT_LIMIT {
+            return Err(admin_evidence_overflow());
+        }
+        let receipts = receipts
+            .into_iter()
+            .map(|row| ReceiptRecord {
+                id: row.0,
+                attempt_id: row.1,
+                kind: row.2,
+                source: row.3,
+                remote_id: row.4,
+                digest: row.5,
+                observed_at: row.6,
+            })
+            .collect();
         let retry_requests = sqlx::query_as::<
             _,
             (
@@ -280,24 +298,33 @@ impl PostgresNotificationRepository {
             from notification.retry_requests
             where delivery_id = $1
             order by created_at asc, id asc
+            limit $2
             "#,
         )
         .bind(delivery_id)
+        .bind(
+            i64::try_from(ADMIN_RETRY_REQUEST_LIMIT + 1)
+                .expect("Admin retry-request limit fits bigint"),
+        )
         .fetch_all(&self.db)
         .await
-        .map_err(map_sql_error)?
-        .into_iter()
-        .map(|row| RetryRecord {
-            id: row.0,
-            kind: row.1,
-            requested_by: row.2,
-            source_revision: row.3,
-            decision: row.4,
-            reason: row.5,
-            scheduled_at: row.6,
-            created_at: row.7,
-        })
-        .collect();
+        .map_err(map_sql_error)?;
+        if retry_requests.len() > ADMIN_RETRY_REQUEST_LIMIT {
+            return Err(admin_evidence_overflow());
+        }
+        let retry_requests = retry_requests
+            .into_iter()
+            .map(|row| RetryRecord {
+                id: row.0,
+                kind: row.1,
+                requested_by: row.2,
+                source_revision: row.3,
+                decision: row.4,
+                reason: row.5,
+                scheduled_at: row.6,
+                created_at: row.7,
+            })
+            .collect();
         Ok(Some(DeliveryDetail {
             delivery: summary_from_row(row),
             attempts,
@@ -316,13 +343,13 @@ impl PostgresNotificationRepository {
         idempotency_key: &str,
         requested_by: &str,
         now: DateTime<Utc>,
-    ) -> AppResult<RetryResult> {
-        let mut tx = LinkedTransaction::begin(&self.db).await?;
+    ) -> NotificationResult<RetryResult> {
+        let mut tx = self.db.begin().await?;
         sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
             .bind(format!(
                 "notification:manual-retry:{delivery_id}:{idempotency_key}"
             ))
-            .execute(&mut **tx.sql())
+            .execute(tx.as_mut())
             .await
             .map_err(map_sql_error)?;
         if let Some(row) = sqlx::query_as::<_, (i64, String, Option<DateTime<Utc>>)>(
@@ -335,12 +362,12 @@ impl PostgresNotificationRepository {
         )
         .bind(delivery_id)
         .bind(idempotency_key)
-        .fetch_optional(&mut **tx.sql())
+        .fetch_optional(tx.as_mut())
         .await
         .map_err(map_sql_error)?
         {
             let scheduled_at = row.2.ok_or_else(|| {
-                AppError::new(
+                NotificationError::new(
                     ErrorCode::Conflict,
                     "Existing manual retry request was rejected",
                 )
@@ -363,18 +390,26 @@ impl PostgresNotificationRepository {
             "#,
         )
         .bind(delivery_id)
-        .fetch_optional(&mut **tx.sql())
+        .fetch_optional(tx.as_mut())
         .await
         .map_err(map_sql_error)?
-        .ok_or_else(|| AppError::new(ErrorCode::NotFound, "Notification delivery was not found"))?;
+        .ok_or_else(|| {
+            NotificationError::new(ErrorCode::NotFound, "Notification delivery was not found")
+        })?;
         if delivery.1 != expected_revision {
-            return Err(AppError::new(
+            return Err(NotificationError::new(
                 ErrorCode::Conflict,
                 "Notification delivery revision is stale",
             ));
         }
+        if delivery.1 >= MAX_SAFE_WIRE_INTEGER {
+            return Err(NotificationError::new(
+                ErrorCode::Conflict,
+                "Notification delivery revision exhausted the portable wire range",
+            ));
+        }
         if delivery.0 != "retry_scheduled" || delivery.2 >= delivery.3 {
-            return Err(AppError::new(
+            return Err(NotificationError::new(
                 ErrorCode::Conflict,
                 "Notification delivery is not eligible for retry",
             ));
@@ -397,7 +432,7 @@ impl PostgresNotificationRepository {
         .bind(expected_revision)
         .bind(idempotency_key)
         .bind(now)
-        .execute(&mut **tx.sql())
+        .execute(tx.as_mut())
         .await
         .map_err(map_sql_error)?;
         let new_revision = expected_revision + 1;
@@ -405,18 +440,20 @@ impl PostgresNotificationRepository {
             r#"
             update notification.deliveries
             set next_attempt_at = $3, revision = $4, updated_at = $3
-            where id = $1 and revision = $2 and status = 'retry_scheduled'
+            where id = $1 and revision = $2 and revision < $5
+              and status = 'retry_scheduled'
             "#,
         )
         .bind(delivery_id)
         .bind(expected_revision)
         .bind(now)
         .bind(new_revision)
-        .execute(&mut **tx.sql())
+        .bind(MAX_SAFE_WIRE_INTEGER)
+        .execute(tx.as_mut())
         .await
         .map_err(map_sql_error)?;
         if result.rows_affected() != 1 {
-            return Err(AppError::new(
+            return Err(NotificationError::new(
                 ErrorCode::Conflict,
                 "Notification delivery changed while retry was scheduled",
             ));
@@ -430,6 +467,13 @@ impl PostgresNotificationRepository {
             idempotent_replay: false,
         })
     }
+}
+
+fn admin_evidence_overflow() -> NotificationError {
+    NotificationError::new(
+        ErrorCode::EvidenceOverflow,
+        "Notification delivery evidence exceeds the bounded Admin projection",
+    )
 }
 
 #[allow(clippy::type_complexity)]
@@ -478,8 +522,8 @@ fn stable_id(prefix: &str, input: &str) -> String {
     format!("{prefix}_{}", &digest[..32])
 }
 
-fn map_sql_error(error: sqlx::Error) -> AppError {
-    AppError::new(
+fn map_sql_error(error: sqlx::Error) -> NotificationError {
+    NotificationError::new(
         ErrorCode::Internal,
         "Notification Business API storage operation failed",
     )
