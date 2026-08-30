@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub(crate) const MAX_SAFE_WIRE_INTEGER: i64 = 9_007_199_254_740_991;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryStatus {
@@ -11,24 +13,6 @@ pub enum DeliveryStatus {
     Delivered,
     Failed,
     DeliveryUnknown,
-}
-
-impl DeliveryStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Attempting => "attempting",
-            Self::Accepted => "accepted",
-            Self::RetryScheduled => "retry_scheduled",
-            Self::Delivered => "delivered",
-            Self::Failed => "failed",
-            Self::DeliveryUnknown => "delivery_unknown",
-        }
-    }
-
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Delivered | Self::Failed | Self::DeliveryUnknown)
-    }
 }
 
 impl std::str::FromStr for DeliveryStatus {
@@ -44,43 +28,6 @@ impl std::str::FromStr for DeliveryStatus {
             "failed" => Ok(Self::Failed),
             "delivery_unknown" => Ok(Self::DeliveryUnknown),
             _ => Err("unknown delivery status"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AttemptStatus {
-    Dispatching,
-    Accepted,
-    TemporaryFailure,
-    PermanentFailure,
-    DeliveryUnknown,
-}
-
-impl AttemptStatus {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Dispatching => "dispatching",
-            Self::Accepted => "accepted",
-            Self::TemporaryFailure => "temporary_failure",
-            Self::PermanentFailure => "permanent_failure",
-            Self::DeliveryUnknown => "delivery_unknown",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RetryKind {
-    Automatic,
-    Manual,
-}
-
-impl RetryKind {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Automatic => "automatic",
-            Self::Manual => "manual",
         }
     }
 }
@@ -112,6 +59,7 @@ impl RetryPolicy {
     }
 }
 
+#[cfg(test)]
 pub fn can_transition(from: DeliveryStatus, to: DeliveryStatus) -> bool {
     matches!(
         (from, to),

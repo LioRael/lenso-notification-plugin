@@ -29,7 +29,7 @@ describe("Notification Console contract", () => {
     let request: Record<string, unknown> | undefined;
     const api = createNotificationBusinessApi({
       identity: {
-        moduleId: "lenso/notification",
+        moduleId: "lenso.notification",
         moduleReleaseDigest: `sha256:${"1".repeat(64)}`,
         uiArtifactDigest: `sha256:${"2".repeat(64)}`,
       },

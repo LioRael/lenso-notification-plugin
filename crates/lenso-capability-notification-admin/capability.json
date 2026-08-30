@@ -1,0 +1,29 @@
+{
+  "id": "lenso.notification.admin@1",
+  "version": "1.0.0",
+  "portable": true,
+  "cross_lane_transfer": true,
+  "operations": [
+    {
+      "name": "list_deliveries",
+      "interaction": "request",
+      "request_schema": "schemas/list-deliveries-request.schema.json",
+      "response_schema": "schemas/list-deliveries-response.schema.json",
+      "domain_error_schema": "schemas/list-deliveries-error.schema.json"
+    },
+    {
+      "name": "get_delivery",
+      "interaction": "request",
+      "request_schema": "schemas/get-delivery-request.schema.json",
+      "response_schema": "schemas/get-delivery-response.schema.json",
+      "domain_error_schema": "schemas/get-delivery-error.schema.json"
+    },
+    {
+      "name": "retry_delivery",
+      "interaction": "request",
+      "request_schema": "schemas/retry-delivery-request.schema.json",
+      "response_schema": "schemas/retry-delivery-response.schema.json",
+      "domain_error_schema": "schemas/retry-delivery-error.schema.json"
+    }
+  ]
+}

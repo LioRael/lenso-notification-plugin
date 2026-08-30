@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["delivery", "attempts", "receipts", "retry_requests", "open_in_story_correlation_id"],
+  "properties": {
+    "delivery": { "$ref": "#/$defs/Delivery" },
+    "attempts": { "type": "array", "maxItems": 10, "items": { "$ref": "#/$defs/Attempt" } },
+    "receipts": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/Receipt" } },
+    "retry_requests": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/RetryRecord" } },
+    "open_in_story_correlation_id": { "type": "string", "minLength": 1, "maxLength": 240 }
+  },
+  "$defs": {
+    "Delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "recipient_mask", "template_id", "template_version", "locale", "status", "revision", "attempt_count", "max_attempts", "redacted_preview", "content_digest", "correlation_id", "next_attempt_at", "final_reason", "created_at", "updated_at", "retry_now_eligible"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "recipient_mask": { "type": "string", "minLength": 3, "maxLength": 320 },
+        "template_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "template_version": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "locale": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "status": { "$ref": "#/$defs/DeliveryStatus" },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "attempt_count": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "redacted_preview": { "type": "string", "maxLength": 160 },
+        "content_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "correlation_id": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "next_attempt_at": { "type": ["string", "null"], "format": "date-time", "minLength": 1, "maxLength": 64 },
+        "final_reason": { "type": ["string", "null"], "maxLength": 160 },
+        "created_at": { "type": "string", "format": "date-time", "minLength": 1, "maxLength": 64 },
+        "updated_at": { "type": "string", "format": "date-time", "minLength": 1, "maxLength": 64 },
+        "retry_now_eligible": { "type": "boolean" }
+      }
+    },
+    "Attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sequence", "run_id", "status", "provider", "remote_receipt_id", "failure_code", "failure_classification", "started_at", "completed_at"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "run_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "status": { "type": "string", "enum": ["dispatching", "accepted", "temporary_failure", "permanent_failure", "delivery_unknown"] },
+        "provider": { "type": ["string", "null"], "maxLength": 160 },
+        "remote_receipt_id": { "type": ["string", "null"], "maxLength": 320 },
+        "failure_code": { "type": ["string", "null"], "maxLength": 160 },
+        "failure_classification": { "type": ["string", "null"], "maxLength": 160 },
+        "started_at": { "type": "string", "format": "date-time", "minLength": 1, "maxLength": 64 },
+        "completed_at": { "type": ["string", "null"], "format": "date-time", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "Receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "attempt_id", "kind", "source", "remote_id", "digest", "observed_at"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "attempt_id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "kind": { "type": "string", "enum": ["accepted", "delivered", "bounced", "rejected"] },
+        "source": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "remote_id": { "type": "string", "minLength": 1, "maxLength": 320 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "observed_at": { "type": "string", "format": "date-time", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "RetryRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "requested_by", "source_revision", "decision", "reason", "scheduled_at", "created_at"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "kind": { "type": "string", "enum": ["automatic", "manual"] },
+        "requested_by": { "type": ["string", "null"], "maxLength": 240 },
+        "source_revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "decision": { "type": "string", "enum": ["scheduled", "rejected"] },
+        "reason": { "type": ["string", "null"], "maxLength": 160 },
+        "scheduled_at": { "type": ["string", "null"], "format": "date-time", "minLength": 1, "maxLength": 64 },
+        "created_at": { "type": "string", "format": "date-time", "minLength": 1, "maxLength": 64 }
+      }
+    },
+    "DeliveryStatus": { "type": "string", "enum": ["queued", "attempting", "accepted", "retry_scheduled", "delivered", "failed", "delivery_unknown"] }
+  }
+}

@@ -3,7 +3,7 @@
   "info": { "title": "Notification Business API", "version": "v1" },
   "x-lenso-contract-id": "notification-http",
   "x-lenso-contract-version": "v1",
-  "x-lenso-module-id": "lenso/notification",
+  "x-lenso-plugin-id": "lenso.notification",
   "paths": {
     "/deliveries": {
       "get": {

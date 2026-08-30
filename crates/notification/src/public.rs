@@ -1,18 +1,14 @@
-//! Narrow transaction API for collaboration from another linked Module.
-//!
-//! Callers retain ownership of commit/rollback. Notification never exposes its
-//! tables or repository types through this namespace.
+//! Private intent storage used behind the generated Transactional Capability.
 
 use crate::domain::DeliveryStatus;
+use crate::error::{ErrorCode, NotificationError, NotificationResult};
 use crate::snapshot::{
-    EnvironmentSnapshotProtector, SnapshotProtector, content_digest, mask_email, redact_preview,
-    request_digest,
+    SnapshotProtector, content_digest, mask_email, redact_preview, request_digest,
 };
 use chrono::{DateTime, Utc};
-use lenso::host::outbox::ErrorCode;
-use lenso::host::transaction::{AppError, AppResult, LinkedTransaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use sqlx::{Postgres, Transaction};
 
 pub const ORGANIZATION_INVITATION_TEMPLATE_ID: &str = "organization-invitation";
 pub const ORGANIZATION_INVITATION_TEMPLATE_VERSION: &str = "v1";
@@ -70,28 +66,13 @@ struct RenderedInvitation {
     html: String,
 }
 
-/// Creates an organization-invitation notification inside the caller-owned
-/// Lenso transaction. Production composition must provide a 32-byte base64
-/// key through `LENSO_NOTIFICATION_SNAPSHOT_KEY`; absence fails closed before
-/// any business row is written.
-pub async fn create_transactional_email_intent_in_tx(
-    tx: &mut LinkedTransaction<'_>,
-    request: &CreateTransactionalEmailIntent,
-    now: DateTime<Utc>,
-) -> AppResult<TransactionalIntentReceipt> {
-    let protector = EnvironmentSnapshotProtector::from_env()?;
-    create_transactional_email_intent_in_tx_with_protector(tx, request, now, &protector).await
-}
-
-/// Injection seam for deterministic integration tests and host-owned secret
-/// providers. Application code normally uses
-/// [`create_transactional_email_intent_in_tx`].
-pub async fn create_transactional_email_intent_in_tx_with_protector(
-    tx: &mut LinkedTransaction<'_>,
+/// Persists one idempotent intent inside a Notification-owned transaction.
+pub(crate) async fn create_transactional_email_intent_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
     request: &CreateTransactionalEmailIntent,
     now: DateTime<Utc>,
     protector: &dyn SnapshotProtector,
-) -> AppResult<TransactionalIntentReceipt> {
+) -> NotificationResult<TransactionalIntentReceipt> {
     validate_request(request, now)?;
     let digest = request_digest(request)?;
 
@@ -102,7 +83,7 @@ pub async fn create_transactional_email_intent_in_tx_with_protector(
             "notification:{}:{}",
             request.source.module_id, request.idempotency_key
         ))
-        .execute(&mut **tx.sql())
+        .execute(tx.as_mut())
         .await
         .map_err(map_sql_error)?;
 
@@ -135,7 +116,7 @@ pub async fn create_transactional_email_intent_in_tx_with_protector(
     .bind(ORGANIZATION_INVITATION_RENDERER)
     .bind(&template_digest)
     .bind(now)
-    .execute(&mut **tx.sql())
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     let stored_template_digest = sqlx::query_scalar::<_, String>(
@@ -148,11 +129,11 @@ pub async fn create_transactional_email_intent_in_tx_with_protector(
     .bind(ORGANIZATION_INVITATION_TEMPLATE_ID)
     .bind(ORGANIZATION_INVITATION_TEMPLATE_VERSION)
     .bind(&request.recipient.locale)
-    .fetch_one(&mut **tx.sql())
+    .fetch_one(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     if stored_template_digest != template_digest {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Conflict,
             "Notification template release is immutable",
         ));
@@ -162,7 +143,7 @@ pub async fn create_transactional_email_intent_in_tx_with_protector(
     let text = protector.protect(&rendered.text)?;
     let html = protector.protect(&rendered.html)?;
     if subject.key_reference != text.key_reference || text.key_reference != html.key_reference {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Internal,
             "Notification snapshot protection key changed during rendering",
         ));
@@ -195,7 +176,7 @@ pub async fn create_transactional_email_intent_in_tx_with_protector(
     .bind(&message_digest)
     .bind(redact_preview(&rendered.text))
     .bind(now)
-    .execute(&mut **tx.sql())
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
 
@@ -227,7 +208,7 @@ pub async fn create_transactional_email_intent_in_tx_with_protector(
     .bind(&request.correlation_id)
     .bind(&request.causation_id)
     .bind(now)
-    .execute(&mut **tx.sql())
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
 
@@ -242,7 +223,7 @@ pub async fn create_transactional_email_intent_in_tx_with_protector(
     .bind(&delivery_id)
     .bind(&intent_id)
     .bind(now)
-    .execute(&mut **tx.sql())
+    .execute(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
 
@@ -255,10 +236,10 @@ pub async fn create_transactional_email_intent_in_tx_with_protector(
 }
 
 async fn find_idempotent_intent(
-    tx: &mut LinkedTransaction<'_>,
+    tx: &mut Transaction<'_, Postgres>,
     request: &CreateTransactionalEmailIntent,
     digest: &str,
-) -> AppResult<Option<TransactionalIntentReceipt>> {
+) -> NotificationResult<Option<TransactionalIntentReceipt>> {
     let existing = sqlx::query_as::<_, (String, String, String, String, i64)>(
         r#"
         select intents.id, deliveries.id, intents.request_digest, deliveries.status, deliveries.revision
@@ -269,20 +250,20 @@ async fn find_idempotent_intent(
     )
     .bind(&request.source.module_id)
     .bind(&request.idempotency_key)
-    .fetch_optional(&mut **tx.sql())
+    .fetch_optional(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     let Some((intent_id, delivery_id, stored_digest, status, _revision)) = existing else {
         return Ok(None);
     };
     if stored_digest != digest {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Conflict,
             "Notification idempotency key was used with different input",
         ));
     }
     let status = status.parse().map_err(|_| {
-        AppError::new(
+        NotificationError::new(
             ErrorCode::Internal,
             "Notification delivery has an invalid stored status",
         )
@@ -295,46 +276,105 @@ async fn find_idempotent_intent(
     }))
 }
 
-fn validate_request(request: &CreateTransactionalEmailIntent, now: DateTime<Utc>) -> AppResult<()> {
-    for (field, value, limit) in [
-        ("source.module_id", request.source.module_id.as_str(), 160),
+fn validate_request(
+    request: &CreateTransactionalEmailIntent,
+    now: DateTime<Utc>,
+) -> NotificationResult<()> {
+    for (field, value, minimum, maximum) in [
+        (
+            "source.module_id",
+            request.source.module_id.as_str(),
+            1,
+            160,
+        ),
         (
             "source.entity_type",
             request.source.entity_type.as_str(),
-            100,
+            1,
+            160,
         ),
-        ("source.entity_id", request.source.entity_id.as_str(), 240),
-        ("recipient.address", request.recipient.address.as_str(), 320),
-        ("recipient.locale", request.recipient.locale.as_str(), 35),
-        ("idempotency_key", request.idempotency_key.as_str(), 240),
-        ("correlation_id", request.correlation_id.as_str(), 240),
+        (
+            "source.entity_id",
+            request.source.entity_id.as_str(),
+            1,
+            240,
+        ),
+        (
+            "recipient.address",
+            request.recipient.address.as_str(),
+            3,
+            320,
+        ),
+        ("recipient.locale", request.recipient.locale.as_str(), 2, 32),
+        ("idempotency_key", request.idempotency_key.as_str(), 1, 240),
+        ("correlation_id", request.correlation_id.as_str(), 1, 240),
+        (
+            "template.organization_id",
+            request.template.organization_id.as_str(),
+            1,
+            240,
+        ),
         (
             "template.organization_name",
             request.template.organization_name.as_str(),
+            1,
+            240,
+        ),
+        (
+            "template.invitation_id",
+            request.template.invitation_id.as_str(),
+            1,
             240,
         ),
         (
             "template.invitation_url",
             request.template.invitation_url.as_str(),
-            2_048,
+            1,
+            4_096,
         ),
     ] {
         let length = value.chars().count();
-        if value.trim().is_empty() || length > limit {
-            return Err(AppError::new(
+        if value.trim().is_empty() || !(minimum..=maximum).contains(&length) {
+            return Err(NotificationError::new(
                 ErrorCode::Validation,
-                format!("{field} must contain between 1 and {limit} characters"),
+                format!("{field} must contain between {minimum} and {maximum} characters"),
+            ));
+        }
+    }
+    for (field, value, maximum) in [
+        (
+            "recipient.display_name",
+            request.recipient.display_name.as_deref(),
+            240,
+        ),
+        (
+            "template.inviter_display_name",
+            request.template.inviter_display_name.as_deref(),
+            240,
+        ),
+        (
+            "template.role_name",
+            request.template.role_name.as_deref(),
+            160,
+        ),
+        ("causation_id", request.causation_id.as_deref(), 240),
+        ("requested_by", request.requested_by.as_deref(), 240),
+    ] {
+        if value.is_some_and(|value| value.chars().count() > maximum) {
+            return Err(NotificationError::new(
+                ErrorCode::Validation,
+                format!("{field} must contain at most {maximum} characters"),
             ));
         }
     }
     if !request.recipient.address.contains('@') {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Validation,
             "recipient.address must be an email address",
         ));
     }
     if !matches!(request.recipient.locale.as_str(), "en" | "en-US") {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Validation,
             "organization-invitation@v1 supports locale en or en-US",
         ));
@@ -345,22 +385,21 @@ fn validate_request(request: &CreateTransactionalEmailIntent, now: DateTime<Utc>
             .invitation_url
             .starts_with("http://localhost"))
     {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Validation,
             "template.invitation_url must use HTTPS",
         ));
     }
     if request.template.expires_at <= now {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Validation,
             "template.expires_at must be in the future",
         ));
     }
     if request.source.entity_type != "organization_invitation"
-        || request.source.module_id != "organization"
         || request.source.entity_id != request.template.invitation_id
     {
-        return Err(AppError::new(
+        return Err(NotificationError::new(
             ErrorCode::Validation,
             "Notification source must identify the rendered organization invitation",
         ));
@@ -436,8 +475,9 @@ fn escape_html(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-fn map_sql_error(error: sqlx::Error) -> AppError {
-    AppError::new(ErrorCode::Internal, "Notification storage operation failed").with_source(error)
+fn map_sql_error(error: sqlx::Error) -> NotificationError {
+    NotificationError::new(ErrorCode::Internal, "Notification storage operation failed")
+        .with_source(error)
 }
 
 #[cfg(test)]

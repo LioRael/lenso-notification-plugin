@@ -1,14 +1,19 @@
 //! Transactional notification business ledger for Lenso.
 
-pub mod business_api;
-pub mod contracts;
-pub mod domain;
-pub mod events;
-pub mod migrations;
-pub mod module;
-pub mod public;
-pub mod repository;
-pub mod runtime;
-pub mod snapshot;
+mod contracts;
+mod domain;
+mod error;
+mod events;
+mod migrations;
+pub mod operator;
+mod plugin;
+mod public;
+mod repository;
+mod runtime;
+mod snapshot;
 
-pub use module::linked_module;
+pub use operator::{NotificationOperator, NotificationOperatorError};
+pub use plugin::{NotificationConfig, NotificationConfigError};
+
+#[cfg(test)]
+mod postgres_tests;

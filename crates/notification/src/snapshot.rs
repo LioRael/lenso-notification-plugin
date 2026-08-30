@@ -1,9 +1,10 @@
 use aes_gcm::aead::{Aead as _, KeyInit as _};
 use aes_gcm::{Aes256Gcm, Nonce};
-use lenso::host::outbox::ErrorCode;
-use lenso::host::transaction::{AppError, AppResult};
 use regex::Regex;
 use sha2::{Digest as _, Sha256};
+use zeroize::Zeroizing;
+
+use crate::error::{ErrorCode, NotificationError, NotificationResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtectedValue {
@@ -12,62 +13,62 @@ pub struct ProtectedValue {
 }
 
 pub trait SnapshotProtector: std::fmt::Debug + Send + Sync {
-    fn protect(&self, plaintext: &str) -> AppResult<ProtectedValue>;
-    fn reveal(&self, protected: &ProtectedValue) -> AppResult<String>;
+    fn protect(&self, plaintext: &str) -> NotificationResult<ProtectedValue>;
+    fn reveal(&self, protected: &ProtectedValue) -> NotificationResult<String>;
 }
 
-pub const SNAPSHOT_KEY_ENV: &str = "LENSO_NOTIFICATION_SNAPSHOT_KEY";
-
-#[derive(Debug, Clone)]
-pub struct EnvironmentSnapshotProtector {
-    key: [u8; 32],
+#[derive(Clone)]
+pub struct AeadSnapshotProtector {
+    key: Zeroizing<[u8; 32]>,
     key_reference: String,
 }
 
-impl EnvironmentSnapshotProtector {
-    pub fn from_env() -> AppResult<Self> {
-        let encoded = std::env::var(SNAPSHOT_KEY_ENV).map_err(|_| {
-            AppError::new(
-                ErrorCode::Validation,
-                "Notification snapshot protection is not configured",
-            )
-        })?;
-        Self::from_base64_key(&encoded, format!("env:{SNAPSHOT_KEY_ENV}"))
+impl std::fmt::Debug for AeadSnapshotProtector {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AeadSnapshotProtector")
+            .field("key_reference", &self.key_reference)
+            .finish_non_exhaustive()
     }
+}
 
-    pub fn from_base64_key(encoded: &str, key_reference: String) -> AppResult<Self> {
+impl AeadSnapshotProtector {
+    pub fn from_base64_key(encoded: &str, key_reference: String) -> NotificationResult<Self> {
         use base64::Engine as _;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .map_err(|error| {
-                AppError::new(
+                NotificationError::new(
                     ErrorCode::Validation,
                     "Notification snapshot key must be base64",
                 )
                 .with_source(error)
             })?;
         let key: [u8; 32] = bytes.try_into().map_err(|_| {
-            AppError::new(
+            NotificationError::new(
                 ErrorCode::Validation,
                 "Notification snapshot key must contain exactly 32 bytes",
             )
         })?;
-        Ok(Self { key, key_reference })
+        Ok(Self {
+            key: Zeroizing::new(key),
+            key_reference,
+        })
     }
 }
 
-impl SnapshotProtector for EnvironmentSnapshotProtector {
-    fn protect(&self, plaintext: &str) -> AppResult<ProtectedValue> {
+impl SnapshotProtector for AeadSnapshotProtector {
+    fn protect(&self, plaintext: &str) -> NotificationResult<ProtectedValue> {
         use base64::Engine as _;
-        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|_| {
-            AppError::new(
+        let cipher = Aes256Gcm::new_from_slice(self.key.as_ref()).map_err(|_| {
+            NotificationError::new(
                 ErrorCode::Validation,
                 "Notification snapshot key is invalid",
             )
         })?;
         let mut nonce_bytes = [0_u8; 12];
         getrandom::fill(&mut nonce_bytes).map_err(|error| {
-            AppError::new(
+            NotificationError::new(
                 ErrorCode::Internal,
                 "Notification snapshot nonce generation failed",
             )
@@ -76,7 +77,7 @@ impl SnapshotProtector for EnvironmentSnapshotProtector {
         let ciphertext = cipher
             .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_bytes())
             .map_err(|_| {
-                AppError::new(
+                NotificationError::new(
                     ErrorCode::Internal,
                     "Notification snapshot encryption failed",
                 )
@@ -92,16 +93,16 @@ impl SnapshotProtector for EnvironmentSnapshotProtector {
         })
     }
 
-    fn reveal(&self, protected: &ProtectedValue) -> AppResult<String> {
+    fn reveal(&self, protected: &ProtectedValue) -> NotificationResult<String> {
         use base64::Engine as _;
         if protected.key_reference != self.key_reference {
-            return Err(AppError::new(
+            return Err(NotificationError::new(
                 ErrorCode::Validation,
                 "Notification snapshot key reference does not match",
             ));
         }
         let encoded = protected.ciphertext.strip_prefix("v1:").ok_or_else(|| {
-            AppError::new(
+            NotificationError::new(
                 ErrorCode::Validation,
                 "Notification snapshot envelope version is unsupported",
             )
@@ -109,18 +110,18 @@ impl SnapshotProtector for EnvironmentSnapshotProtector {
         let envelope = base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .map_err(|error| {
-                AppError::new(ErrorCode::Validation, "invalid protected snapshot")
+                NotificationError::new(ErrorCode::Validation, "invalid protected snapshot")
                     .with_source(error)
             })?;
         if envelope.len() <= 12 {
-            return Err(AppError::new(
+            return Err(NotificationError::new(
                 ErrorCode::Validation,
                 "invalid protected snapshot envelope",
             ));
         }
         let (nonce_bytes, ciphertext) = envelope.split_at(12);
-        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|_| {
-            AppError::new(
+        let cipher = Aes256Gcm::new_from_slice(self.key.as_ref()).map_err(|_| {
+            NotificationError::new(
                 ErrorCode::Validation,
                 "Notification snapshot key is invalid",
             )
@@ -128,13 +129,13 @@ impl SnapshotProtector for EnvironmentSnapshotProtector {
         let plaintext = cipher
             .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
             .map_err(|_| {
-                AppError::new(
+                NotificationError::new(
                     ErrorCode::Validation,
                     "Notification snapshot authentication failed",
                 )
             })?;
         String::from_utf8(plaintext).map_err(|error| {
-            AppError::new(ErrorCode::Validation, "invalid protected snapshot encoding")
+            NotificationError::new(ErrorCode::Validation, "invalid protected snapshot encoding")
                 .with_source(error)
         })
     }
@@ -142,11 +143,13 @@ impl SnapshotProtector for EnvironmentSnapshotProtector {
 
 /// Explicitly test-only protector. Production composition must inject an AEAD
 /// envelope implementation whose key is resolved from a secret reference.
+#[cfg(test)]
 #[derive(Debug, Default)]
 pub struct TestSnapshotProtector;
 
+#[cfg(test)]
 impl SnapshotProtector for TestSnapshotProtector {
-    fn protect(&self, plaintext: &str) -> AppResult<ProtectedValue> {
+    fn protect(&self, plaintext: &str) -> NotificationResult<ProtectedValue> {
         use base64::Engine as _;
         Ok(ProtectedValue {
             ciphertext: base64::engine::general_purpose::STANDARD.encode(plaintext),
@@ -154,16 +157,16 @@ impl SnapshotProtector for TestSnapshotProtector {
         })
     }
 
-    fn reveal(&self, protected: &ProtectedValue) -> AppResult<String> {
+    fn reveal(&self, protected: &ProtectedValue) -> NotificationResult<String> {
         use base64::Engine as _;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&protected.ciphertext)
             .map_err(|error| {
-                AppError::new(ErrorCode::Validation, "invalid protected snapshot")
+                NotificationError::new(ErrorCode::Validation, "invalid protected snapshot")
                     .with_source(error)
             })?;
         String::from_utf8(bytes).map_err(|error| {
-            AppError::new(ErrorCode::Validation, "invalid protected snapshot encoding")
+            NotificationError::new(ErrorCode::Validation, "invalid protected snapshot encoding")
                 .with_source(error)
         })
     }
@@ -178,9 +181,9 @@ pub fn content_digest(subject: &str, text: &str, html: &str) -> String {
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
-pub fn request_digest(serializable: &impl serde::Serialize) -> AppResult<String> {
+pub fn request_digest(serializable: &impl serde::Serialize) -> NotificationResult<String> {
     let encoded = serde_json::to_vec(serializable).map_err(|error| {
-        AppError::new(ErrorCode::Validation, "intent request cannot be serialized")
+        NotificationError::new(ErrorCode::Validation, "intent request cannot be serialized")
             .with_source(error)
     })?;
     Ok(format!("sha256:{}", hex::encode(Sha256::digest(encoded))))
@@ -220,11 +223,9 @@ mod tests {
     fn production_envelope_round_trips_without_plaintext() {
         use base64::Engine as _;
         let key = base64::engine::general_purpose::STANDARD.encode([7_u8; 32]);
-        let protector = EnvironmentSnapshotProtector::from_base64_key(
-            &key,
-            "secret:test-notification-key".to_owned(),
-        )
-        .expect("protector");
+        let protector =
+            AeadSnapshotProtector::from_base64_key(&key, "secret:test-notification-key".to_owned())
+                .expect("protector");
         let protected = protector
             .protect("https://example.test/invitations/secret")
             .expect("protected");

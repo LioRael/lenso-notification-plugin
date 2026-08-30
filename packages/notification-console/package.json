@@ -1,7 +1,7 @@
 {
   "name": "@lenso/notification-console",
   "version": "0.0.0",
-  "description": "Notification Deliveries Console UI artifact.",
+  "description": "Unbound Notification Deliveries Console UI artifact awaiting a vNext Adapter.",
   "private": true,
   "license": "MIT",
   "type": "module",

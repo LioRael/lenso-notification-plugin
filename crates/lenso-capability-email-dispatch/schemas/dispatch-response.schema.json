@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Cross-field contract: accepted has no failure; only accepted may carry remote_receipt; failure classification equals outcome; retry_after_ms is allowed only for temporary_failure.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "provider", "observed_at", "remote_receipt", "failure"],
+  "properties": {
+    "outcome": { "type": "string", "enum": ["accepted", "temporary_failure", "permanent_failure", "delivery_unknown"] },
+    "provider": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "observed_at": { "type": "string", "format": "date-time", "minLength": 1, "maxLength": 64 },
+    "remote_receipt": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["remote_id", "source", "digest"],
+      "properties": {
+        "remote_id": { "type": "string", "minLength": 1, "maxLength": 320 },
+        "source": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "failure": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["code", "classification", "retry_after_ms"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "classification": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "retry_after_ms": { "type": ["integer", "null"], "minimum": 0, "maximum": 86400000 }
+      }
+    }
+  },
+  "if": { "properties": { "outcome": { "const": "accepted" } } },
+  "then": { "properties": { "failure": { "const": null } } },
+  "else": {
+    "if": { "properties": { "outcome": { "const": "temporary_failure" } } },
+    "then": {
+      "properties": {
+        "remote_receipt": { "const": null },
+        "failure": {
+          "type": "object",
+          "properties": {
+            "classification": { "const": "temporary_failure" }
+          }
+        }
+      }
+    },
+    "else": {
+      "if": { "properties": { "outcome": { "const": "permanent_failure" } } },
+      "then": {
+        "properties": {
+          "remote_receipt": { "const": null },
+          "failure": {
+            "type": "object",
+            "properties": {
+              "classification": { "const": "permanent_failure" },
+              "retry_after_ms": { "const": null }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "remote_receipt": { "const": null },
+          "failure": {
+            "type": "object",
+            "properties": {
+              "classification": { "const": "delivery_unknown" },
+              "retry_after_ms": { "const": null }
+            }
+          }
+        }
+      }
+    }
+  }
+}
