@@ -1,10 +1,10 @@
 # Notification domain
 
 Notification owns one durable business ledger for transactional email intent,
-immutable rendering, delivery attempts, receipts, retry decisions, and final
-status. It does not own SMTP credentials, provider accounts, raw provider
-transcripts, Kernel execution records, SMS, push, campaigns, or template
-editing.
+immutable rendered snapshots, delivery attempts, receipts, retry decisions,
+and final status. It does not own template definitions or rendering policy,
+SMTP credentials, provider accounts, raw provider transcripts, Kernel execution
+records, SMS, push, campaigns, or template editing.
 
 ## Transactional workflows
 
@@ -12,8 +12,12 @@ editing.
    access-request operation on `lenso.notification.transactional@1`. The caller
    Instance, not a payload field, becomes the source identity and idempotency
    scope.
-2. Notification renders and pins one fixed v1 template, protects the recipient
-   and subject/text/HTML, and commits one queued delivery in its own transaction.
+2. For a new intent, Notification calls the exact bound
+   `lenso.notification-template@1/render` operation with a fixed template id,
+   explicit `v1`, locale, and typed variable set. It validates the returned
+   template/version/locale metadata and recomputes the content digest before it
+   protects subject/text/HTML and commits one queued delivery in its own
+   transaction.
 3. An authorized worker calls `lenso.notification.delivery@1/dispatch_due`.
    Notification atomically appends one immutable attempt before invoking the
    exact bound `lenso.email-dispatch@1` Provider.
@@ -31,7 +35,8 @@ idempotent.
 Access-request lifecycle intent is limited to submitted, approved, denied, and
 expiring. Role/scope data is display-only and bounded. The Capability has no
 arbitrary HTML/template field and no reason or approval-note field. Rendering
-is deterministic and HTML-escapes every interpolated value. The mandatory
+is delegated only to the typed Template Capability; Notification never accepts
+caller-supplied markup. The mandatory
 `access-request:<request_id>:<event>` key makes one caller's request/event pair
 idempotent; changed input conflicts. Intent acceptance is not delivery proof.
 
@@ -52,6 +57,9 @@ as `delivery_unknown`; it never converts an invalid retry delay into a retry.
 
 - One caller Instance plus one intent idempotency key and request digest is the
   business idempotency claim.
+- A committed exact replay is returned before a Template Provider call. A new
+  intent is rendered before opening its write transaction and is rechecked
+  under the existing advisory lock, preserving concurrent CAS semantics.
 - One Notification attempt has one stable run ID and one provider idempotency
   key.
 - Known temporary outcomes close the current attempt before scheduling another.

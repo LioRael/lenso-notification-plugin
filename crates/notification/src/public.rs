@@ -8,12 +8,10 @@ use crate::snapshot::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use sqlx::{Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 
 pub const ORGANIZATION_INVITATION_TEMPLATE_ID: &str = "organization-invitation";
 pub const ORGANIZATION_INVITATION_TEMPLATE_VERSION: &str = "v1";
-pub const ORGANIZATION_INVITATION_RENDERER: &str =
-    "lenso.notification.renderer/organization-invitation@v1";
 pub const ACCESS_REQUEST_TEMPLATE_VERSION: &str = "v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,10 +113,18 @@ pub struct TransactionalIntentReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RenderedMessage {
-    subject: String,
-    text: String,
-    html: String,
+pub(crate) struct RenderedTemplate {
+    pub template_id: String,
+    pub template_version: String,
+    pub requested_locale: String,
+    pub resolved_locale: String,
+    pub fallback_used: bool,
+    pub renderer_identity: String,
+    pub template_digest: String,
+    pub content_digest: String,
+    pub subject: String,
+    pub text: String,
+    pub html: String,
 }
 
 struct IntentPersistence<'a> {
@@ -129,24 +135,67 @@ struct IntentPersistence<'a> {
     causation_id: Option<&'a str>,
     requested_by: Option<&'a str>,
     purpose: &'static str,
-    template_id: &'static str,
-    template_version: &'static str,
-    renderer_identity: &'static str,
-    template_digest: String,
+    template_id: &'a str,
+    template_version: &'a str,
+    template_locale: &'a str,
+    renderer_identity: &'a str,
+    template_digest: &'a str,
+    content_digest: &'a str,
     request_digest: String,
-    rendered: RenderedMessage,
+    rendered: &'a RenderedTemplate,
+}
+
+/// Returns an already committed replay without consulting the Template Provider.
+///
+/// The final transactional write still performs the same advisory-lock check, so
+/// this read-only fast path cannot weaken concurrent idempotency guarantees.
+pub(crate) async fn find_transactional_email_intent_replay(
+    pool: &PgPool,
+    request: &CreateTransactionalEmailIntent,
+    now: DateTime<Utc>,
+) -> NotificationResult<Option<TransactionalIntentReceipt>> {
+    validate_invitation_request(request, now)?;
+    find_idempotent_intent_in_pool(
+        pool,
+        &request.source.module_id,
+        &request.idempotency_key,
+        &request_digest(request)?,
+    )
+    .await
+}
+
+/// Returns an already committed access-request replay without rendering again.
+pub(crate) async fn find_access_request_notification_replay(
+    pool: &PgPool,
+    request: &CreateAccessRequestNotificationIntent,
+    now: DateTime<Utc>,
+) -> NotificationResult<Option<TransactionalIntentReceipt>> {
+    validate_access_request(request, now)?;
+    find_idempotent_intent_in_pool(
+        pool,
+        &request.source.module_id,
+        &request.idempotency_key,
+        &request_digest(request)?,
+    )
+    .await
 }
 
 /// Persists one idempotent intent inside a Notification-owned transaction.
 pub(crate) async fn create_transactional_email_intent_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     request: &CreateTransactionalEmailIntent,
+    rendered: &RenderedTemplate,
     now: DateTime<Utc>,
     protector: &dyn SnapshotProtector,
 ) -> NotificationResult<TransactionalIntentReceipt> {
     validate_invitation_request(request, now)?;
+    validate_rendered_template(
+        rendered,
+        ORGANIZATION_INVITATION_TEMPLATE_ID,
+        ORGANIZATION_INVITATION_TEMPLATE_VERSION,
+        &request.recipient.locale,
+    )?;
     let digest = request_digest(request)?;
-    let rendered = render_organization_invitation(&request.template, &request.recipient.locale);
     persist_intent(
         tx,
         IntentPersistence {
@@ -157,10 +206,12 @@ pub(crate) async fn create_transactional_email_intent_in_tx(
             causation_id: request.causation_id.as_deref(),
             requested_by: request.requested_by.as_deref(),
             purpose: "transactional.organization_invitation",
-            template_id: ORGANIZATION_INVITATION_TEMPLATE_ID,
-            template_version: ORGANIZATION_INVITATION_TEMPLATE_VERSION,
-            renderer_identity: ORGANIZATION_INVITATION_RENDERER,
-            template_digest: invitation_template_digest(&request.recipient.locale),
+            template_id: &rendered.template_id,
+            template_version: &rendered.template_version,
+            template_locale: &rendered.resolved_locale,
+            renderer_identity: &rendered.renderer_identity,
+            template_digest: &rendered.template_digest,
+            content_digest: &rendered.content_digest,
             request_digest: digest,
             rendered,
         },
@@ -174,18 +225,19 @@ pub(crate) async fn create_transactional_email_intent_in_tx(
 pub(crate) async fn create_access_request_notification_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     request: &CreateAccessRequestNotificationIntent,
+    rendered: &RenderedTemplate,
     now: DateTime<Utc>,
     protector: &dyn SnapshotProtector,
 ) -> NotificationResult<TransactionalIntentReceipt> {
     validate_access_request(request, now)?;
-    let digest = request_digest(request)?;
-    let rendered = render_access_request_notification(
-        &request.template,
-        &request.recipient,
-        &request.recipient.locale,
-    );
     let template_id = access_request_template_id(request.template.event);
-    let renderer_identity = access_request_renderer_identity(request.template.event);
+    validate_rendered_template(
+        rendered,
+        template_id,
+        ACCESS_REQUEST_TEMPLATE_VERSION,
+        &request.recipient.locale,
+    )?;
+    let digest = request_digest(request)?;
     persist_intent(
         tx,
         IntentPersistence {
@@ -196,13 +248,12 @@ pub(crate) async fn create_access_request_notification_in_tx(
             causation_id: request.causation_id.as_deref(),
             requested_by: request.requested_by.as_deref(),
             purpose: "transactional.access_request",
-            template_id,
-            template_version: ACCESS_REQUEST_TEMPLATE_VERSION,
-            renderer_identity,
-            template_digest: access_request_template_digest(
-                request.template.event,
-                &request.recipient.locale,
-            ),
+            template_id: &rendered.template_id,
+            template_version: &rendered.template_version,
+            template_locale: &rendered.resolved_locale,
+            renderer_identity: &rendered.renderer_identity,
+            template_digest: &rendered.template_digest,
+            content_digest: &rendered.content_digest,
             request_digest: digest,
             rendered,
         },
@@ -245,11 +296,17 @@ async fn persist_intent(
         &intent.rendered.text,
         &intent.rendered.html,
     );
+    if message_digest != intent.content_digest {
+        return Err(NotificationError::new(
+            ErrorCode::Internal,
+            "Notification Template content digest does not match rendered content",
+        ));
+    }
     let template_release_id = stable_id(
         "ntf_tpl",
         &format!(
             "{}:{}:{}",
-            intent.template_id, intent.template_version, intent.recipient.locale
+            intent.template_id, intent.template_version, intent.template_locale
         ),
     );
     sqlx::query(
@@ -263,9 +320,9 @@ async fn persist_intent(
     .bind(&template_release_id)
     .bind(intent.template_id)
     .bind(intent.template_version)
-    .bind(&intent.recipient.locale)
+    .bind(intent.template_locale)
     .bind(intent.renderer_identity)
-    .bind(&intent.template_digest)
+    .bind(intent.template_digest)
     .bind(now)
     .execute(tx.as_mut())
     .await
@@ -279,13 +336,13 @@ async fn persist_intent(
     )
     .bind(intent.template_id)
     .bind(intent.template_version)
-    .bind(&intent.recipient.locale)
+    .bind(intent.template_locale)
     .fetch_one(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
     if stored_template_digest != intent.template_digest {
         return Err(NotificationError::new(
-            ErrorCode::Conflict,
+            ErrorCode::Internal,
             "Notification template release is immutable",
         ));
     }
@@ -406,6 +463,35 @@ async fn find_idempotent_intent(
     .fetch_optional(tx.as_mut())
     .await
     .map_err(map_sql_error)?;
+    project_idempotent_intent(existing, digest)
+}
+
+async fn find_idempotent_intent_in_pool(
+    pool: &PgPool,
+    source_module: &str,
+    idempotency_key: &str,
+    digest: &str,
+) -> NotificationResult<Option<TransactionalIntentReceipt>> {
+    let existing = sqlx::query_as::<_, (String, String, String, String, i64)>(
+        r#"
+        select intents.id, deliveries.id, intents.request_digest, deliveries.status, deliveries.revision
+        from notification.intents intents
+        join notification.deliveries deliveries on deliveries.intent_id = intents.id
+        where intents.source_module = $1 and intents.idempotency_key = $2
+        "#,
+    )
+    .bind(source_module)
+    .bind(idempotency_key)
+    .fetch_optional(pool)
+    .await
+    .map_err(map_sql_error)?;
+    project_idempotent_intent(existing, digest)
+}
+
+fn project_idempotent_intent(
+    existing: Option<(String, String, String, String, i64)>,
+    digest: &str,
+) -> NotificationResult<Option<TransactionalIntentReceipt>> {
     let Some((intent_id, delivery_id, stored_digest, status, _revision)) = existing else {
         return Ok(None);
     };
@@ -713,134 +799,51 @@ fn validate_access_request(
     Ok(())
 }
 
-fn render_organization_invitation(
-    template: &OrganizationInvitationTemplateV1,
-    locale: &str,
-) -> RenderedMessage {
-    let organization = template.organization_name.trim();
-    let inviter = template
-        .inviter_display_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let role = template
-        .role_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let introduction = inviter.map_or_else(
-        || format!("You have been invited to join {organization}."),
-        |name| format!("{name} invited you to join {organization}."),
-    );
-    let role_line = role.map_or_else(String::new, |value| format!("\nRole: {value}"));
-    let expiry = template.expires_at.to_rfc3339();
-    let text = format!(
-        "{introduction}{role_line}\n\nAccept invitation: {}\nExpires: {expiry}\n\nIf you did not expect this invitation, you can ignore this email.",
-        template.invitation_url
-    );
-    let subject = format!("Invitation to join {organization}");
-    let html = format!(
-        "<!doctype html><html lang=\"{}\"><body><p>{}</p>{}<p><a href=\"{}\">Accept invitation</a></p><p>Expires: {}</p><p>If you did not expect this invitation, you can ignore this email.</p></body></html>",
-        escape_html(locale),
-        escape_html(&introduction),
-        role.map_or_else(String::new, |value| format!(
-            "<p>Role: {}</p>",
-            escape_html(value)
-        )),
-        escape_html(&template.invitation_url),
-        escape_html(&expiry),
-    );
-    RenderedMessage {
-        subject,
-        text,
-        html,
+fn validate_rendered_template(
+    rendered: &RenderedTemplate,
+    expected_template_id: &str,
+    expected_version: &str,
+    expected_requested_locale: &str,
+) -> NotificationResult<()> {
+    let metadata_valid = rendered.template_id == expected_template_id
+        && rendered.template_version == expected_version
+        && rendered.requested_locale == expected_requested_locale
+        && rendered.fallback_used
+            == (rendered.requested_locale.as_str() != rendered.resolved_locale.as_str())
+        && bounded_non_blank(&rendered.resolved_locale, 2, 32)
+        && bounded_non_blank(&rendered.renderer_identity, 1, 160)
+        && valid_sha256_digest(&rendered.template_digest)
+        && valid_sha256_digest(&rendered.content_digest);
+    let content_valid = bounded_non_blank(&rendered.subject, 1, 998)
+        && !rendered.subject.contains(['\r', '\n'])
+        && bounded_non_blank(&rendered.text, 1, 131_072)
+        && bounded_non_blank(&rendered.html, 1, 262_144)
+        && content_digest(&rendered.subject, &rendered.text, &rendered.html)
+            == rendered.content_digest;
+    if !metadata_valid || !content_valid {
+        return Err(NotificationError::new(
+            ErrorCode::Internal,
+            "Notification Template Provider returned an invalid render projection",
+        ));
     }
+    Ok(())
 }
 
-fn render_access_request_notification(
-    template: &AccessRequestNotificationTemplateV1,
-    recipient: &EmailRecipient,
-    locale: &str,
-) -> RenderedMessage {
-    let role = template
-        .role
-        .display_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&template.role.role_id);
-    let scope = template
-        .scope
-        .display_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&template.scope.id);
-    let greeting = recipient
-        .display_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| "Hello,".to_owned(), |name| format!("Hello {name},"));
-    let (subject, outcome) = match template.event {
-        AccessRequestNotificationEvent::Submitted => (
-            "Access request submitted",
-            "Your access request was submitted for review.",
-        ),
-        AccessRequestNotificationEvent::Approved => (
-            "Access request approved",
-            "Your access request was approved.",
-        ),
-        AccessRequestNotificationEvent::Denied => {
-            ("Access request denied", "Your access request was denied.")
-        }
-        AccessRequestNotificationEvent::Expiring => (
-            "Access request expiring",
-            "Your pending access request is expiring soon.",
-        ),
-    };
-    let expiry_text = template
-        .expires_at
-        .map(|value| format!("\nExpires: {}", value.to_rfc3339()))
-        .unwrap_or_default();
-    let expiry_html = template
-        .expires_at
-        .map(|value| format!("<p>Expires: {}</p>", escape_html(&value.to_rfc3339())))
-        .unwrap_or_default();
-    let text = format!(
-        "{greeting}\n\n{outcome}\n\nOrganization: {}\nRole: {role}\nScope: {}/{}\nRequest: {}{expiry_text}\n\nContact an organization administrator if you did not expect this notification.",
-        template.organization_id, template.scope.kind, scope, template.request_id
-    );
-    let html = format!(
-        "<!doctype html><html lang=\"{}\"><body><p>{}</p><p>{}</p><p>Organization: {}</p><p>Role: {}</p><p>Scope: {}/{}</p><p>Request: {}</p>{}<p>Contact an organization administrator if you did not expect this notification.</p></body></html>",
-        escape_html(locale),
-        escape_html(&greeting),
-        escape_html(outcome),
-        escape_html(&template.organization_id),
-        escape_html(role),
-        escape_html(&template.scope.kind),
-        escape_html(scope),
-        escape_html(&template.request_id),
-        expiry_html,
-    );
-    RenderedMessage {
-        subject: subject.to_owned(),
-        text,
-        html,
-    }
+fn bounded_non_blank(value: &str, minimum: usize, maximum: usize) -> bool {
+    let length = value.chars().count();
+    !value.trim().is_empty() && (minimum..=maximum).contains(&length)
 }
 
-fn invitation_template_digest(locale: &str) -> String {
-    let definition = format!(
-        "{ORGANIZATION_INVITATION_RENDERER}\0{locale}\0subject:introduction:role:invitation_url:expires_at"
-    );
-    format!(
-        "sha256:{}",
-        hex::encode(Sha256::digest(definition.as_bytes()))
-    )
+fn valid_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
-fn access_request_template_id(event: AccessRequestNotificationEvent) -> &'static str {
+pub(crate) fn access_request_template_id(event: AccessRequestNotificationEvent) -> &'static str {
     match event {
         AccessRequestNotificationEvent::Submitted => "access-request-submitted",
         AccessRequestNotificationEvent::Approved => "access-request-approved",
@@ -849,46 +852,9 @@ fn access_request_template_id(event: AccessRequestNotificationEvent) -> &'static
     }
 }
 
-fn access_request_renderer_identity(event: AccessRequestNotificationEvent) -> &'static str {
-    match event {
-        AccessRequestNotificationEvent::Submitted => {
-            "lenso.notification.renderer/access-request-submitted@v1"
-        }
-        AccessRequestNotificationEvent::Approved => {
-            "lenso.notification.renderer/access-request-approved@v1"
-        }
-        AccessRequestNotificationEvent::Denied => {
-            "lenso.notification.renderer/access-request-denied@v1"
-        }
-        AccessRequestNotificationEvent::Expiring => {
-            "lenso.notification.renderer/access-request-expiring@v1"
-        }
-    }
-}
-
-fn access_request_template_digest(event: AccessRequestNotificationEvent, locale: &str) -> String {
-    let definition = format!(
-        "{}\0{locale}\0subject:greeting:outcome:organization:role:scope:request:expires_at",
-        access_request_renderer_identity(event)
-    );
-    format!(
-        "sha256:{}",
-        hex::encode(Sha256::digest(definition.as_bytes()))
-    )
-}
-
 fn stable_id(prefix: &str, input: &str) -> String {
     let digest = hex::encode(Sha256::digest(input.as_bytes()));
     format!("{prefix}_{}", &digest[..32])
-}
-
-fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 fn map_sql_error(error: sqlx::Error) -> NotificationError {
@@ -901,23 +867,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invitation_renderer_is_deterministic_and_escapes_html() {
-        let template = OrganizationInvitationTemplateV1 {
-            organization_id: "org_1".to_owned(),
-            organization_name: "Acme <Ops>".to_owned(),
-            invitation_id: "inv_1".to_owned(),
-            invitation_url: "https://example.test/i?a=1&token=secret".to_owned(),
-            inviter_display_name: Some("Alice & Bob".to_owned()),
-            role_name: Some("Admin".to_owned()),
-            expires_at: DateTime::parse_from_rfc3339("2026-09-01T00:00:00Z")
-                .expect("timestamp")
-                .with_timezone(&Utc),
-        };
-        let first = render_organization_invitation(&template, "en");
-        let second = render_organization_invitation(&template, "en");
-        assert_eq!(first, second);
-        assert!(first.html.contains("Acme &lt;Ops&gt;"));
-        assert!(first.html.contains("&amp;token=secret"));
+    fn rendered_template_projection_is_digest_bound_and_version_exact() {
+        let mut rendered = rendered_template("organization-invitation", "en", "en");
+        validate_rendered_template(&rendered, "organization-invitation", "v1", "en")
+            .expect("valid render projection");
+
+        rendered.template_version = "v2".to_owned();
+        assert_eq!(
+            validate_rendered_template(&rendered, "organization-invitation", "v1", "en")
+                .expect_err("version mismatch")
+                .code,
+            ErrorCode::Internal
+        );
+
+        rendered.template_version = "v1".to_owned();
+        rendered.content_digest = format!("sha256:{}", "0".repeat(64));
+        assert_eq!(
+            validate_rendered_template(&rendered, "organization-invitation", "v1", "en")
+                .expect_err("content digest mismatch")
+                .code,
+            ErrorCode::Internal
+        );
     }
 
     #[test]
@@ -957,40 +927,19 @@ mod tests {
     }
 
     #[test]
-    fn access_request_renderer_is_deterministic_and_escapes_every_display_field() {
-        let template = AccessRequestNotificationTemplateV1 {
-            request_id: "ar_<1>".to_owned(),
-            organization_id: "org_<ops>".to_owned(),
-            event: AccessRequestNotificationEvent::Submitted,
-            role: AccessRequestRoleV1 {
-                role_id: "role_admin".to_owned(),
-                display_name: Some("Admin <script>".to_owned()),
-            },
-            scope: AccessRequestScopeV1 {
-                kind: "organization<&>".to_owned(),
-                id: "org_1".to_owned(),
-                display_name: Some("Acme \"Ops\"".to_owned()),
-            },
-            expires_at: Some(
-                DateTime::parse_from_rfc3339("2026-09-01T00:00:00Z")
-                    .expect("timestamp")
-                    .with_timezone(&Utc),
-            ),
-        };
-        let recipient = EmailRecipient {
-            address: "member@example.com".to_owned(),
-            display_name: Some("Alice & Bob".to_owned()),
-            locale: "en".to_owned(),
-        };
-        let first = render_access_request_notification(&template, &recipient, "en");
-        let second = render_access_request_notification(&template, &recipient, "en");
-        assert_eq!(first, second);
-        assert!(first.html.contains("Alice &amp; Bob"));
-        assert!(first.html.contains("Admin &lt;script&gt;"));
-        assert!(first.html.contains("organization&lt;&amp;&gt;"));
-        assert!(first.html.contains("Acme &quot;Ops&quot;"));
-        assert!(first.html.contains("ar_&lt;1&gt;"));
-        assert!(!first.html.contains("Admin <script>"));
+    fn rendered_template_fallback_metadata_must_be_self_consistent() {
+        let mut rendered = rendered_template("access-request-submitted", "en-US", "en");
+        rendered.fallback_used = true;
+        validate_rendered_template(&rendered, "access-request-submitted", "v1", "en-US")
+            .expect("valid fallback projection");
+
+        rendered.fallback_used = false;
+        assert_eq!(
+            validate_rendered_template(&rendered, "access-request-submitted", "v1", "en-US")
+                .expect_err("inconsistent fallback metadata")
+                .code,
+            ErrorCode::Internal
+        );
     }
 
     #[test]
@@ -1061,6 +1010,29 @@ mod tests {
             correlation_id: "corr_1".to_owned(),
             causation_id: None,
             requested_by: Some("subject_1".to_owned()),
+        }
+    }
+
+    fn rendered_template(
+        template_id: &str,
+        requested_locale: &str,
+        resolved_locale: &str,
+    ) -> RenderedTemplate {
+        let subject = "Subject".to_owned();
+        let text = "Text".to_owned();
+        let html = "<p>Text</p>".to_owned();
+        RenderedTemplate {
+            template_id: template_id.to_owned(),
+            template_version: "v1".to_owned(),
+            requested_locale: requested_locale.to_owned(),
+            resolved_locale: resolved_locale.to_owned(),
+            fallback_used: requested_locale != resolved_locale,
+            renderer_identity: "lenso.notification-template.renderer/safe-sections@1".to_owned(),
+            template_digest: format!("sha256:{}", "a".repeat(64)),
+            content_digest: content_digest(&subject, &text, &html),
+            subject,
+            text,
+            html,
         }
     }
 }

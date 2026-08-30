@@ -23,8 +23,9 @@ to name a source Plugin or receipt Provider.
   `lenso.notification.delivery@1`, and `lenso.notification.admin@1`, all at
   descriptor `1.1.0` for Transactional and `1.0.0` for Delivery/Admin,
   portable, and cross-lane transferable.
-- Required Capabilities: exactly one `lenso.secrets@1` Provider and exactly one
-  `lenso.email-dispatch@1` Provider.
+- Required Capabilities: exactly one `lenso.secrets@1` Provider, exactly one
+  `lenso.email-dispatch@1` Provider, and exactly one
+  `lenso.notification-template@1` descriptor `1.0.0` Provider.
 - Implementation: linked native Rust with a Plugin-owned PostgreSQL schema and
   generated Client/Provider glue.
 - Configuration: fixed schema identity; database and snapshot-key Secret
@@ -41,6 +42,14 @@ production App. Its Domain errors are strictly pre-effect rejections. Once an
 effect starts, uncertainty is response `delivery_unknown` or Runtime failure,
 both of which Notification handles without replaying the effect.
 
+`lenso.notification-template@1` owns immutable template definitions, locale
+fallback, and safe rendering. Notification always requests an explicit `v1`
+for its five typed template ids, validates Provider metadata and digests, and
+stores the resolved template locale with the protected snapshot. The Template
+Provider must allow the selected Notification Instance key in `render_callers`.
+Exact committed replays do not depend on Provider availability; a failed render
+for a new intent writes nothing.
+
 ## Observable behavior
 
 The vertical workflow is intent -> protected snapshot -> queued delivery ->
@@ -55,8 +64,8 @@ retry-scheduled work that existed before the observation.
 
 `create_access_request_notification` accepts only submitted, approved, denied,
 or expiring events and fixed bounded role/scope display data. It exposes no
-arbitrary template/HTML and accepts no access reason or approval note. Rendering
-is deterministic and HTML-escaped. The request/event-derived idempotency key is
+arbitrary template/HTML and accepts no access reason or approval note. The
+request/event-derived idempotency key is
 mandatory: exact replay returns the existing intent, while any changed input
 conflicts. Acceptance means the durable delivery ledger contains the intent;
 it is not evidence that email was delivered.

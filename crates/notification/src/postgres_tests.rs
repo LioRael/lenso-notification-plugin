@@ -15,8 +15,9 @@ use crate::plugin::format_time;
 use crate::public::{
     AccessRequestNotificationEvent, AccessRequestNotificationTemplateV1, AccessRequestRoleV1,
     AccessRequestScopeV1, CreateAccessRequestNotificationIntent, CreateTransactionalEmailIntent,
-    EmailRecipient, IntentSource, OrganizationInvitationTemplateV1,
+    EmailRecipient, IntentSource, OrganizationInvitationTemplateV1, RenderedTemplate,
     create_access_request_notification_in_tx, create_transactional_email_intent_in_tx,
+    find_transactional_email_intent_replay,
 };
 use crate::repository::PostgresNotificationRepository;
 use crate::runtime::claim_one_due;
@@ -371,6 +372,7 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
     let blue = create_transactional_email_intent_in_tx(
         &mut blue_tx,
         &blue_request,
+        &invitation_render(&blue_request),
         now,
         &TestSnapshotProtector,
     )
@@ -386,6 +388,7 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
     let red = create_transactional_email_intent_in_tx(
         &mut red_tx,
         &red_request,
+        &invitation_render(&red_request),
         now,
         &TestSnapshotProtector,
     )
@@ -470,6 +473,7 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
     let access_receipt = create_access_request_notification_in_tx(
         &mut access_tx,
         &access_request,
+        &access_request_render(&access_request),
         now,
         &TestSnapshotProtector,
     )
@@ -493,6 +497,7 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
     let access_replay = create_access_request_notification_in_tx(
         &mut access_replay_tx,
         &access_request,
+        &access_request_render(&access_request),
         now,
         &TestSnapshotProtector,
     )
@@ -514,6 +519,7 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
     let access_conflict = create_access_request_notification_in_tx(
         &mut access_conflict_tx,
         &changed_access_request,
+        &access_request_render(&changed_access_request),
         now,
         &TestSnapshotProtector,
     )
@@ -533,6 +539,7 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
     let approved_receipt = create_access_request_notification_in_tx(
         &mut approved_tx,
         &approved,
+        &access_request_render(&approved),
         now,
         &TestSnapshotProtector,
     )
@@ -571,6 +578,7 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
     let first = create_transactional_email_intent_in_tx(
         &mut first_tx,
         &request,
+        &invitation_render(&request),
         now,
         &TestSnapshotProtector,
     )
@@ -579,11 +587,18 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
     first_tx.commit().await.expect("commit intent");
     assert_eq!(first.status, DeliveryStatus::Queued);
     assert!(!first.idempotent_replay);
+    let fast_replay = find_transactional_email_intent_replay(&pool, &request, now)
+        .await
+        .expect("read committed replay without rendering")
+        .expect("committed replay exists");
+    assert_eq!(fast_replay.intent_id, first.intent_id);
+    assert!(fast_replay.idempotent_replay);
 
     let mut replay_tx = pool.begin().await.expect("begin replay transaction");
     let replay = create_transactional_email_intent_in_tx(
         &mut replay_tx,
         &request,
+        &invitation_render(&request),
         now,
         &TestSnapshotProtector,
     )
@@ -596,10 +611,15 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
 
     let mut changed = request.clone();
     changed.recipient.address = "different@example.com".to_owned();
+    let fast_conflict = find_transactional_email_intent_replay(&pool, &changed, now)
+        .await
+        .expect_err("changed input must conflict before rendering");
+    assert_eq!(fast_conflict.code, ErrorCode::Conflict);
     let mut conflict_tx = pool.begin().await.expect("begin conflict transaction");
     let conflict = create_transactional_email_intent_in_tx(
         &mut conflict_tx,
         &changed,
+        &invitation_render(&changed),
         now,
         &TestSnapshotProtector,
     )
@@ -774,6 +794,7 @@ async fn plugin_owned_delivery_ledger_is_atomic_append_only_and_fail_closed() {
     let unknown = create_transactional_email_intent_in_tx(
         &mut unknown_tx,
         &unknown_request,
+        &invitation_render(&unknown_request),
         delivered_at + Duration::seconds(1),
         &TestSnapshotProtector,
     )
@@ -1058,6 +1079,7 @@ async fn seed_intent(pool: &sqlx::PgPool, now: chrono::DateTime<Utc>, suffix: &s
     let receipt = create_transactional_email_intent_in_tx(
         &mut transaction,
         &request,
+        &invitation_render(&request),
         now,
         &TestSnapshotProtector,
     )
@@ -1360,5 +1382,57 @@ fn access_request_notification(
         correlation_id: "corr_access_request_notification_1".to_owned(),
         causation_id: Some(format!("access_request_notification_1:{event_name}")),
         requested_by: Some("usr_requester".to_owned()),
+    }
+}
+
+fn invitation_render(request: &CreateTransactionalEmailIntent) -> RenderedTemplate {
+    let subject = format!("Invitation to join {}", request.template.organization_name);
+    let text = format!(
+        "Accept invitation: {}\nExpires: {}",
+        request.template.invitation_url,
+        request.template.expires_at.to_rfc3339()
+    );
+    let html = format!(
+        "<p><a href=\"{}\">Accept invitation</a></p>",
+        request.template.invitation_url
+    );
+    RenderedTemplate {
+        template_id: "organization-invitation".to_owned(),
+        template_version: "v1".to_owned(),
+        requested_locale: request.recipient.locale.clone(),
+        resolved_locale: request.recipient.locale.clone(),
+        fallback_used: false,
+        renderer_identity: "lenso.notification-template.renderer/safe-sections@1".to_owned(),
+        template_digest: format!("sha256:{}", "a".repeat(64)),
+        content_digest: crate::snapshot::content_digest(&subject, &text, &html),
+        subject,
+        text,
+        html,
+    }
+}
+
+fn access_request_render(request: &CreateAccessRequestNotificationIntent) -> RenderedTemplate {
+    let template_id = crate::public::access_request_template_id(request.template.event);
+    let event = match request.template.event {
+        AccessRequestNotificationEvent::Submitted => "submitted",
+        AccessRequestNotificationEvent::Approved => "approved",
+        AccessRequestNotificationEvent::Denied => "denied",
+        AccessRequestNotificationEvent::Expiring => "expiring",
+    };
+    let subject = format!("Access request {event}");
+    let text = format!("Request: {}", request.template.request_id);
+    let html = format!("<p>Request: {}</p>", request.template.request_id);
+    RenderedTemplate {
+        template_id: template_id.to_owned(),
+        template_version: "v1".to_owned(),
+        requested_locale: request.recipient.locale.clone(),
+        resolved_locale: request.recipient.locale.clone(),
+        fallback_used: false,
+        renderer_identity: "lenso.notification-template.renderer/safe-sections@1".to_owned(),
+        template_digest: format!("sha256:{}", "b".repeat(64)),
+        content_digest: crate::snapshot::content_digest(&subject, &text, &html),
+        subject,
+        text,
+        html,
     }
 }
