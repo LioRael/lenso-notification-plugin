@@ -51,7 +51,7 @@ done
 # registry. During an unreleased coordinated change, patch those names to the
 # exact source packages only to create the archive; the archive-only graph is
 # independently checked below.
-"$cargo_bin" "${source_patches[@]}" package --quiet --offline \
+"$cargo_bin" "${source_patches[@]}" package --quiet \
   "${plugin_package_flags[@]}" --no-verify -p lenso-notification-plugin
 
 archive_patches=()
