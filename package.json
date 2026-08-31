@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm --dir packages/notification-console build",
     "check": "pnpm check:contracts && pnpm test && pnpm typecheck && pnpm build",
-    "check:contracts": "node scripts/verify-contracts.mjs",
+    "check:contracts": "node tests/verify-contracts.mjs",
     "test": "vitest run packages/notification-console/src",
     "typecheck": "tsc -b --pretty false"
   },
