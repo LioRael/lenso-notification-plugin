@@ -816,7 +816,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-capability-email-dispatch"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "lenso-contract-runtime",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-capability-notification-admin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "lenso-contract-runtime",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-capability-notification-delivery"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "lenso-contract-runtime",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-capability-notification-transactional"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "lenso-contract-runtime",
@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "lenso-notification-plugin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "base64",
