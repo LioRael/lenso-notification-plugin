@@ -1,6 +1,6 @@
 [package]
 name = "lenso-notification-plugin"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 description = "Plugin-first transactional notification ledger for Lenso."
