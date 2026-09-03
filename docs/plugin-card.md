@@ -130,6 +130,13 @@ core `8599db7`, runtime `8981510`, and protocols `9d2774c`. Importing it would
 create duplicate Kernel/source types. This migration therefore adds no path
 patch, dependency downgrade, Host shim, or fake endpoint.
 
+The private `lenso.notification.admin.agent-tools` adapter is separately
+removable and independent of that HTTP prerequisite. It exposes the Admin
+role's two redacted reads and revision-checked manual retry, forwards the
+invocation context, and leaves exact caller admission and all retry decisions
+with Notification. It does not expose transactional, delivery-worker,
+template, or email operations.
+
 ## vNext break
 
 The legacy `lenso-module-notification` package and its linked transaction,

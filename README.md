@@ -23,6 +23,11 @@ implementation:
 - `lenso-notification-plugin` provides the three Notification roles as Plugin
   `lenso.notification` in root Slot `notifications`.
 
+The workspace also contains private
+`lenso-notification-admin-agent-tools-plugin`, a stateless adapter that exposes
+redacted delivery listing, detail inspection, and explicit manual retry to a
+Console Agent through `lenso.agent.tool-provider@2`.
+
 Generated Clients and Providers are the only public business call surface.
 Binding a Capability is necessary but not sufficient authority: immutable
 configuration allowlists exact caller Instance keys for transactional,
@@ -136,6 +141,11 @@ core/runtime/protocol source revisions than this Plugin. Importing it here
 would create duplicate Kernel types, so this repository deliberately contains
 no HTTP Adapter, path patch, or legacy Host shim. The prerequisite is dependency
 alignment in `lenso-web`, followed by a separately removable Adapter Plugin.
+
+The private Agent Tool adapter is independent of that HTTP prerequisite. It
+binds only `lenso.notification.admin@1`, forwards the invocation context, and
+never exposes recipient addresses, rendered bodies, transactional intent,
+delivery-worker operations, templates, or email dispatch.
 
 See [the Plugin card](docs/plugin-card.md) and
 [the domain boundary](docs/domain/notification.md).

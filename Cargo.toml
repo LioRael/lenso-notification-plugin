@@ -5,6 +5,7 @@ members = [
     "crates/lenso-capability-notification-admin",
     "crates/lenso-capability-notification-delivery",
     "crates/lenso-capability-notification-transactional",
+    "crates/lenso-notification-admin-agent-tools-plugin",
     "crates/notification",
 ]
 
@@ -24,6 +25,7 @@ getrandom = "0.4"
 hex = "0.4"
 lenso = "0.5.0"
 lenso-app-plan = "0.3.0"
+lenso-capability-agent-tool-provider = "0.1.0"
 lenso-capability-notification-template = "0.1.0"
 lenso-capability-secrets = "0.1.1"
 lenso-contract-runtime = "0.1.3"
