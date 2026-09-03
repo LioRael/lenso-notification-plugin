@@ -1,6 +1,6 @@
 [package]
 name = "lenso-notification-plugin"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 description = "Plugin-first transactional notification ledger for Lenso."
@@ -27,10 +27,10 @@ futures.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 lenso.workspace = true
-lenso-capability-email-dispatch = { version = "0.1.0", path = "../lenso-capability-email-dispatch" }
-lenso-capability-notification-admin = { version = "0.1.0", path = "../lenso-capability-notification-admin" }
-lenso-capability-notification-delivery = { version = "0.1.0", path = "../lenso-capability-notification-delivery" }
-lenso-capability-notification-transactional = { version = "0.1.0", path = "../lenso-capability-notification-transactional" }
+lenso-capability-email-dispatch = { version = "0.1.1", path = "../lenso-capability-email-dispatch" }
+lenso-capability-notification-admin = { version = "0.1.1", path = "../lenso-capability-notification-admin" }
+lenso-capability-notification-delivery = { version = "0.1.1", path = "../lenso-capability-notification-delivery" }
+lenso-capability-notification-transactional = { version = "0.1.1", path = "../lenso-capability-notification-transactional" }
 lenso-capability-notification-template.workspace = true
 lenso-capability-secrets.workspace = true
 lenso-postgres-kit.workspace = true
