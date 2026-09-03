@@ -53,9 +53,8 @@ package_version() {
     "$1" <<<"$metadata"
 }
 
-template_source="git+https://github.com/LioRael/lenso-notification-template-plugin?rev=c07d56a5caecd173916ea3fa5b094f78e1d00648#c07d56a5caecd173916ea3fa5b094f78e1d00648"
-template_manifest="$(jq -r --arg source "$template_source" \
-  '.packages[] | select(.name == "lenso-capability-notification-template" and .version == "0.1.0" and .source == $source) | .manifest_path' \
+template_manifest="$(jq -r \
+  '.packages[] | select(.name == "lenso-capability-notification-template" and .version == "0.1.0" and (.source | startswith("registry+"))) | .manifest_path' \
   <<<"$dependency_metadata")"
 if [[ -z "$template_manifest" || ! -f "$template_manifest" ]]; then
   printf 'exact lock-resolved Notification Template Capability source is missing\n' >&2
