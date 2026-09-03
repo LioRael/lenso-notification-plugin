@@ -349,7 +349,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -815,6 +815,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-capability-agent-tool-provider"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba82adc6b3f227a2ca511be05584cf871afdc958cf00ae0085efc15c63c4cf38"
+dependencies = [
+ "futures",
+ "lenso-contract-authoring",
+ "lenso-contract-codegen",
+ "lenso-contract-runtime",
+ "lenso-guest-sdk",
+ "lenso-kernel",
+ "lenso-plugin-authoring",
+ "lenso-runtime-codec",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lenso-capability-email-dispatch"
 version = "0.1.1"
 dependencies = [
@@ -938,6 +957,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lenso-guest-sdk"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c94cad4370ff9fdefba039a001ea099889db91ac676707330b2f09d3940326df"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lenso-kernel"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -974,6 +1003,19 @@ dependencies = [
  "serde_json",
  "syn 2.0.119",
  "toml",
+]
+
+[[package]]
+name = "lenso-notification-admin-agent-tools-plugin"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "lenso",
+ "lenso-capability-agent-tool-provider",
+ "lenso-capability-notification-admin",
+ "lenso-kernel",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1341,7 +1383,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1800,7 +1842,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
